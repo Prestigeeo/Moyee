@@ -48,6 +48,12 @@ INJECTION_PATTERNS = [
     re.compile(r"disregard\s+(?:all\s+)?(?:previous|prior)\s+directives", re.IGNORECASE),
 ]
 
+CROSS_PAPER_REGEX = re.compile(
+    r"\b(common\s+trends?|trends?|themes?|compare|comparison|synthesi[sz]e|"
+    r"similarities|differences|these\s+papers|these\s+studies|all\s+papers|all\s+sources)\b",
+    re.IGNORECASE,
+)
+
 
 def sanitize_chunk_text(text: str) -> str:
     """Neutralise embedded prompt-injection directives inside uploaded document chunks."""
@@ -110,7 +116,9 @@ def retrieve_project_passages(
     if not rows:
         return []
 
-    query_tokens = tokenize(query)
+    is_cross_paper = bool(CROSS_PAPER_REGEX.search(query))
+    effective_query = f"{query} {project.topic or ''}" if is_cross_paper else query
+    query_tokens = tokenize(effective_query)
     query_terms = set(query_tokens)
     query_grams = _stem_ngrams(query_tokens)
 
@@ -130,7 +138,7 @@ def retrieve_project_passages(
         chunk_grams = _stem_ngrams(chunk_tokens + tokenize(source.title or ""))
         sem_score = _cosine_similarity(query_grams, chunk_grams)
 
-        if lex_score > 0 or sem_score >= 0.18:
+        if lex_score > 0 or sem_score >= 0.18 or is_cross_paper:
             lexical_scores.append((lex_score, idx))
             semantic_scores.append((sem_score, idx))
 
@@ -156,7 +164,22 @@ def retrieve_project_passages(
         fused.append((combined, chunk, source))
 
     fused.sort(key=lambda item: item[0], reverse=True)
-    selected = fused[:top_k]
+
+    # For cross-paper synthesis queries, ensure at least 1 top passage per distinct source first
+    if is_cross_paper:
+        seen_sources: set[uuid.UUID] = set()
+        diverse: list[tuple[float, DocumentChunk, ProjectSource]] = []
+        remainder: list[tuple[float, DocumentChunk, ProjectSource]] = []
+        for item in fused:
+            src_id = item[2].id
+            if src_id not in seen_sources and len(diverse) < top_k:
+                seen_sources.add(src_id)
+                diverse.append(item)
+            else:
+                remainder.append(item)
+        selected = (diverse + remainder)[:top_k]
+    else:
+        selected = fused[:top_k]
 
     passages: list[dict] = []
     for idx, (score, chunk, source) in enumerate(selected, start=1):

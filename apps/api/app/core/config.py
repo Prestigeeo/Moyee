@@ -31,11 +31,13 @@ class Settings(BaseSettings):
     # Local storage directory for uploaded PDFs (used when S3/Supabase storage is not configured)
     storage_dir: str = ".storage"
 
-    # AI providers (provider-agnostic gateway)
+    # AI providers (provider-agnostic gateway: Gemini -> Groq -> Ollama -> Extractive)
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3-flash-preview"
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
+    ollama_base_url: str = ""
+    ollama_model: str = "llama3.2"
 
     # Paystack billing (test mode by default)
     paystack_secret_key: str = "sk_test_moyee_dev"

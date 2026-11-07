@@ -92,7 +92,6 @@ def _parse_structured_json(raw_text: str) -> dict | None:
 
 
 def _call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str) -> dict | None:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -101,10 +100,18 @@ def _call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str)
             "responseMimeType": "application/json",
         },
     }
+    models_to_try = [model]
+    if model != "gemini-3-flash-preview":
+        models_to_try.append("gemini-3-flash-preview")
     with httpx.Client(timeout=25.0) as client:
-        resp = client.post(url, params={"key": api_key}, json=payload)
-        resp.raise_for_status()
-        body = resp.json()
+        for m in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+            resp = client.post(url, params={"key": api_key}, json=payload)
+            if resp.status_code == 404 and m != models_to_try[-1]:
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            break
     candidates = body.get("candidates") or []
     if not candidates:
         return None
@@ -115,24 +122,51 @@ def _call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str)
 
 def _call_groq(system_prompt: str, user_prompt: str, api_key: str, model: str) -> dict | None:
     url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    models_to_try = [model]
+    if model != "openai/gpt-oss-120b":
+        models_to_try.append("openai/gpt-oss-120b")
+    with httpx.Client(timeout=25.0) as client:
+        for m in models_to_try:
+            payload = {
+                "model": m,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            }
+            resp = client.post(url, headers=headers, json=payload)
+            if resp.status_code == 404 and m != models_to_try[-1]:
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            break
+    choices = body.get("choices") or []
+    if not choices:
+        return None
+    content = (choices[0].get("message") or {}).get("content", "")
+    return _parse_structured_json(content)
+
+
+def _call_ollama(system_prompt: str, user_prompt: str, base_url: str, model: str) -> dict | None:
+    url = f"{base_url.rstrip('/')}/api/chat"
     payload = {
         "model": model,
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.2},
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    with httpx.Client(timeout=25.0) as client:
-        resp = client.post(url, headers=headers, json=payload)
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(url, json=payload)
         resp.raise_for_status()
         body = resp.json()
-    choices = body.get("choices") or []
-    if not choices:
-        return None
-    content = (choices[0].get("message") or {}).get("content", "")
+    content = (body.get("message") or {}).get("content", "")
     return _parse_structured_json(content)
 
 
@@ -335,6 +369,12 @@ def generate_grounded_response(
             "to their Project Topic in 'answer' without inventing any [S#] citation markers, and "
             "note in 'limitations' that claims should be verified against empirical literature."
         )
+    elif len(passages) >= 2:
+        system_prompt += (
+            "\n6. Multiple source passages are provided. Synthesise common trends, points of "
+            "agreement, and methodological or empirical differences across the sources, citing "
+            "each relevant source inline (e.g. [S1], [S2])."
+        )
     rq_text = "; ".join(research_questions) if research_questions else "Not set"
     user_prompt = (
         f"Project: {project_name}\n"
@@ -378,6 +418,23 @@ def generate_grounded_response(
                 )
         except Exception as exc:
             logger.warning("Groq call failed, falling back (%s)", type(exc).__name__)
+
+    if settings.ollama_base_url:
+        try:
+            parsed = _call_ollama(
+                system_prompt, user_prompt, settings.ollama_base_url, settings.ollama_model
+            )
+            if _usable_answer(parsed, question):
+                return AIResponse(
+                    answer_with_markers=str(parsed.get("answer", "")),
+                    interpretation=str(parsed.get("interpretation", "")),
+                    limitations=str(parsed.get("limitations", "")),
+                    suggested_actions=[str(a) for a in (parsed.get("suggested_actions") or [])][:4],
+                    provider="ollama",
+                    model=settings.ollama_model,
+                )
+        except Exception as exc:
+            logger.warning("Ollama call failed, falling back (%s)", type(exc).__name__)
 
     return _extractive_fallback(question, mode, project_topic, passages)
 
