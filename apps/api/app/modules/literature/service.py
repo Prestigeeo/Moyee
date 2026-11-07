@@ -18,6 +18,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.ai.gateway import generate_llm_matrix_cells, generate_llm_matrix_synthesis
 from app.modules.billing import service as billing
 from app.modules.library.models import DocumentChunk, ProjectSource
 from app.modules.literature.models import LiteratureEntry, LiteratureMatrix
@@ -36,14 +37,34 @@ from app.modules.references.formatter import format_inline_citation
 from app.modules.retrieval.service import tokenize
 
 MATRIX_FIELD_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("aim", ["aim", "objective", "purpose", "this study", "examine", "investigate"]),
+    (
+        "aim",
+        [
+            "current study aims",
+            "this study aims",
+            "this study examines",
+            "this study investigates",
+            "study addresses",
+            "aim",
+            "objective",
+            "purpose",
+            "this study",
+            "examine",
+            "investigate",
+        ],
+    ),
     (
         "methodology",
         [
-            "methodology",
+            "study adopted",
+            "quasi-experimental",
+            "quasi experimental",
+            "cross-sectional",
             "research design",
+            "methodology",
             "qualitative",
             "quantitative",
+            "mixed methods",
             "mixed",
             "panel",
             "experiment",
@@ -51,19 +72,58 @@ MATRIX_FIELD_KEYWORDS: list[tuple[str, list[str]]] = [
     ),
     (
         "sample",
-        ["sample", "participants", "population", "respondents", "n =", "households", "students"],
+        [
+            "participants",
+            "sample was drawn",
+            "enrolled in",
+            "sample",
+            "population",
+            "respondents",
+            "n =",
+            "households",
+            "learners",
+            "undergraduate",
+            "students",
+        ],
     ),
     (
         "data_collection",
-        ["survey", "questionnaire", "interview", "dataset", "records", "satellite", "observations"],
+        [
+            "questionnaire",
+            "survey",
+            "interview",
+            "data collection",
+            "collected",
+            "instrument",
+            "dataset",
+            "records",
+            "satellite",
+            "observations",
+        ],
     ),
     (
         "analysis",
-        ["regression", "anova", "correlation", "thematic", "statistical", "model", "estimated"],
+        [
+            "anova",
+            "t-test",
+            "spss",
+            "descriptive statistical",
+            "regression",
+            "correlation",
+            "thematic",
+            "statistical",
+            "coding",
+            "model",
+            "estimated",
+        ],
     ),
     (
         "findings",
         [
+            "our findings show",
+            "results showed",
+            "results of study",
+            "findings reveal",
             "result",
             "finding",
             "showed",
@@ -76,46 +136,199 @@ MATRIX_FIELD_KEYWORDS: list[tuple[str, list[str]]] = [
     ),
     (
         "limitations",
-        ["limitation", "constraint", "future research", "caveat", "shortcoming", "horizon"],
+        [
+            "limits the representativeness",
+            "constrains the generalizability",
+            "limitation",
+            "limitations",
+            "constraint",
+            "future research",
+            "caveat",
+            "shortcoming",
+            "horizon",
+        ],
     ),
 ]
+
+SYNTHESIS_STOPWORDS: set[str] = {
+    "these",
+    "those",
+    "their",
+    "there",
+    "where",
+    "which",
+    "while",
+    "within",
+    "through",
+    "between",
+    "among",
+    "across",
+    "study",
+    "studies",
+    "paper",
+    "papers",
+    "article",
+    "research",
+    "results",
+    "findings",
+    "finding",
+    "result",
+    "using",
+    "based",
+    "however",
+    "although",
+    "furthermore",
+    "moreover",
+    "showed",
+    "shown",
+    "examined",
+    "investigated",
+    "participants",
+    "students",
+    "student",
+    "learners",
+    "group",
+    "groups",
+    "level",
+    "levels",
+    "other",
+    "first",
+    "second",
+    "three",
+    "under",
+    "after",
+    "before",
+    "during",
+}
+
+
+def _clean_pdf_sentence(text: str, max_len: int = 300) -> str:
+    """Repair common PDF intra-word spacing glitches and truncate on a clean word boundary."""
+    s = re.sub(r"\s+", " ", text).strip()
+    # Fix hyphen/dash spacing glitches like "AI -based" or "AI- enabled"
+    s = re.sub(r"(\w)\s+-\s*(\w)", r"\1-\2", s)
+    s = re.sub(r"(\w)-\s+(\w)", r"\1-\2", s)
+    # Fix single capital letter split at start of word: "Q ualitative" -> "Qualitative"
+    s = re.sub(r"\b([B-HJ-Z])\s+([a-z]{3,})\b", r"\1\2", s)
+    # Strip leading numbering artifacts like "26) to ensure..."
+    s = re.sub(r"^\d+\)\s*", "", s)
+    if len(s) <= max_len:
+        return s
+    cut = s[: max_len - 1].rsplit(" ", 1)[0].rstrip(",;:")
+    return f"{cut}…"
+
+
+def _is_reference_chunk(text: str) -> bool:
+    """Detect bibliography/reference-list chunks so we don't extract cited book titles."""
+    lower = text.lower()
+    if re.search(r"(^|\n)\s*(references|bibliography|works cited)\s*(\n|$)", lower):
+        return True
+    doi_hits = len(re.findall(r"https?://doi\.org/|doi:\s*10\.", lower))
+    year_parens = len(re.findall(r"\(\d{4}[a-z]?\)\.", text))
+    ed_hits = len(re.findall(r"\(\d+(?:st|nd|rd|th)\s+ed\.\)", lower))
+    return doi_hits >= 2 or year_parens >= 3 or ed_hits >= 1
+
+
+def _filter_non_reference_chunks(chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+    filtered = [c for c in chunks if not _is_reference_chunk(c.text_content)]
+    return filtered if filtered else list(chunks)
 
 
 def _extract_cells_for_source(
     db: Session, project: Project, source: ProjectSource
 ) -> dict[str, dict]:
-    chunks = db.scalars(
-        select(DocumentChunk)
-        .where(DocumentChunk.project_source_id == source.id)
-        .order_by(DocumentChunk.chunk_index)
-    ).all()
+    raw_chunks = list(
+        db.scalars(
+            select(DocumentChunk)
+            .where(DocumentChunk.project_source_id == source.id)
+            .order_by(DocumentChunk.chunk_index)
+        ).all()
+    )
+    chunks = _filter_non_reference_chunks(raw_chunks)
+
+    chunk_dicts = [
+        {
+            "id": str(c.id),
+            "page_number": c.page_number,
+            "text_content": c.text_content,
+        }
+        for c in chunks
+    ]
+    llm_cells = generate_llm_matrix_cells(
+        project_topic=project.topic,
+        source_title=source.title,
+        source_authors=source.authors,
+        chunks=chunk_dicts,
+    )
 
     cells: dict[str, dict] = {}
+    used_sentences: set[str] = set()
+
     for field_key, keywords in MATRIX_FIELD_KEYWORDS:
+        if llm_cells and field_key in llm_cells:
+            llm_cell = llm_cells[field_key]
+            val = _clean_pdf_sentence(llm_cell.get("value") or "Not reported", max_len=320)
+            if val != "Not reported":
+                cells[field_key] = {
+                    "value": val,
+                    "page_number": llm_cell.get("page_number"),
+                    "quote": _clean_pdf_sentence(llm_cell.get("quote") or val, max_len=240)
+                    if llm_cell.get("page_number")
+                    else None,
+                    "user_edited": False,
+                }
+                used_sentences.add(val.lower()[:120])
+                continue
+
         best_score = 0
         best_sent: str | None = None
         best_page: int | None = None
 
         for chunk in chunks:
             sentences = [
-                s.strip()
+                _clean_pdf_sentence(s, max_len=300)
                 for s in re.split(r"(?<=[.!?])\s+", chunk.text_content.replace("\n", " "))
-                if len(s.strip()) >= 25
+                if len(s.strip()) >= 28
             ]
             for sent in sentences:
+                norm_key = sent.lower()[:120]
+                if norm_key in used_sentences:
+                    continue
                 lower = sent.lower()
                 score = sum(2 if kw in lower else 0 for kw in keywords)
+                if score == 0:
+                    continue
+                # Boost own-study statements
+                if any(
+                    marker in lower
+                    for marker in (
+                        "this study",
+                        "current study",
+                        "our study",
+                        "our findings",
+                        "we ",
+                        "study 1",
+                        "results:",
+                    )
+                ):
+                    score += 2
+                # Penalize third-party literature citations like "Zhang (2025) demonstrated..."
+                if re.search(r"\b[A-Z][a-z]+\s+(?:et al\.\s*)?\(\d{4}\)", sent):
+                    score -= 3
+                if "in their study" in lower or "ed.)" in lower:
+                    score -= 4
+
                 if score > best_score:
                     best_score = score
                     best_sent = sent
                     best_page = chunk.page_number
 
         if best_sent and best_score > 0:
-            snippet = best_sent[:280]
+            used_sentences.add(best_sent.lower()[:120])
             cells[field_key] = {
-                "value": snippet,
+                "value": best_sent,
                 "page_number": best_page,
-                "quote": snippet,
+                "quote": best_sent[:240],
                 "user_edited": False,
             }
         else:
@@ -126,26 +339,61 @@ def _extract_cells_for_source(
                 "user_edited": False,
             }
 
-    topic_terms = set(tokenize(project.topic))
-    source_terms = set(tokenize(f"{source.title} {source.abstract or ''}"))
-    shared = sorted(topic_terms & source_terms)[:5]
-    rel_text = (
-        f"Addresses {', '.join(shared)} in relation to project topic."
-        if shared
-        else f"Saved as background literature for {project.name}."
-    )
-    cells["relevance"] = {
-        "value": rel_text,
-        "page_number": None,
-        "quote": None,
-        "user_edited": False,
-    }
+    if (
+        llm_cells
+        and "relevance" in llm_cells
+        and llm_cells["relevance"].get("value") != "Not reported"
+    ):
+        cells["relevance"] = {
+            "value": _clean_pdf_sentence(llm_cells["relevance"]["value"], max_len=280),
+            "page_number": None,
+            "quote": None,
+            "user_edited": False,
+        }
+    else:
+        topic_terms = set(tokenize(project.topic)) - SYNTHESIS_STOPWORDS
+        raw_src_tokens = tokenize(f"{source.title} {source.abstract or ''}")
+        source_terms = set(raw_src_tokens) - SYNTHESIS_STOPWORDS
+        shared = sorted(topic_terms & source_terms)[:5]
+        rel_text = (
+            f"Addresses {', '.join(shared)} in relation to project topic."
+            if shared
+            else f"Saved as background literature for {project.name}."
+        )
+        cells["relevance"] = {
+            "value": rel_text,
+            "page_number": None,
+            "quote": None,
+            "user_edited": False,
+        }
     return cells
 
 
 def _build_synthesis(
     project: Project, entries: list[tuple[LiteratureEntry, ProjectSource]]
 ) -> dict:
+    study_rows: list[dict] = []
+    for idx, (entry, src) in enumerate(entries, start=1):
+        label = format_inline_citation(src, project.citation_style, idx)
+        study_rows.append(
+            {
+                "study": label,
+                "title": src.title,
+                "aim": (entry.cells.get("aim") or {}).get("value", "Not reported"),
+                "methodology": (entry.cells.get("methodology") or {}).get("value", "Not reported"),
+                "sample": (entry.cells.get("sample") or {}).get("value", "Not reported"),
+                "findings": (entry.cells.get("findings") or {}).get("value", "Not reported"),
+                "limitations": (entry.cells.get("limitations") or {}).get("value", "Not reported"),
+            }
+        )
+
+    llm_synth = generate_llm_matrix_synthesis(
+        project_topic=project.topic,
+        study_rows=study_rows,
+    )
+    if llm_synth:
+        return llm_synth
+
     term_sources: dict[str, list[str]] = {}
     methods_found: list[str] = []
     unreported_counts: Counter[str] = Counter()
@@ -154,14 +402,14 @@ def _build_synthesis(
         label = format_inline_citation(src, project.citation_style, idx)
         tokens = set(tokenize(f"{src.title} {src.abstract or ''}"))
         for tok in tokens:
-            if len(tok) >= 5:
+            if len(tok) >= 5 and tok not in SYNTHESIS_STOPWORDS:
                 term_sources.setdefault(tok, [])
                 if label not in term_sources[tok]:
                     term_sources[tok].append(label)
 
         method_val = (entry.cells.get("methodology") or {}).get("value", "Not reported")
         if method_val != "Not reported":
-            methods_found.append(f"{label}: {method_val[:120]}")
+            methods_found.append(f"{label}: {method_val[:140]}")
 
         for key in ("sample", "limitations", "data_collection"):
             if (entry.cells.get(key) or {}).get("value") == "Not reported":
@@ -172,9 +420,9 @@ def _build_synthesis(
     ]
     themes = [
         {
-            "theme": term.capitalize(),
+            "theme": f"{term.capitalize()} & Empirical Patterns",
             "sources": srcs,
-            "summary": f"Discussed across {len(srcs)} study(ies) ({', '.join(srcs)}).",
+            "summary": f"Examined across {len(srcs)} study(ies) ({', '.join(srcs)}).",
         }
         for term, srcs in ranked_terms
     ]

@@ -633,3 +633,212 @@ def generate_llm_document_summary(chunks: list[dict]) -> dict[str, dict] | None:
         except Exception as exc:
             logger.warning("LLM summary call failed (%s)", type(exc).__name__)
     return None
+
+
+def _call_any_llm(system_prompt: str, user_prompt: str) -> dict | None:
+    """Try Gemini -> Groq -> Ollama in order and return parsed JSON or None."""
+    settings = get_settings()
+    if settings.gemini_api_key:
+        try:
+            parsed = _call_gemini(
+                system_prompt, user_prompt, settings.gemini_api_key, settings.gemini_model
+            )
+            if parsed and isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            logger.warning("Gemini call failed (%s)", type(exc).__name__)
+
+    if settings.groq_api_key:
+        try:
+            parsed = _call_groq(
+                system_prompt, user_prompt, settings.groq_api_key, settings.groq_model
+            )
+            if parsed and isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            logger.warning("Groq call failed (%s)", type(exc).__name__)
+
+    if settings.ollama_base_url:
+        try:
+            parsed = _call_ollama(
+                system_prompt, user_prompt, settings.ollama_base_url, settings.ollama_model
+            )
+            if parsed and isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            logger.warning("Ollama call failed (%s)", type(exc).__name__)
+
+    return None
+
+
+def generate_llm_matrix_cells(
+    *,
+    project_topic: str,
+    source_title: str,
+    source_authors: list[str] | None,
+    chunks: list[dict],
+) -> dict[str, dict] | None:
+    """Use Gemini/Groq/Ollama to extract Literature Matrix cells for a single study."""
+    settings = get_settings()
+    if (
+        not (settings.gemini_api_key or settings.groq_api_key or settings.ollama_base_url)
+        or not chunks
+    ):
+        return None
+
+    # Sample up to 14 non-reference chunks across beginning, middle, and discussion/limitations
+    if len(chunks) <= 14:
+        sampled = chunks
+    else:
+        head = chunks[:5]
+        tail = chunks[-4:]
+        mid_pool = chunks[5:-4]
+        step = max(1, len(mid_pool) // 5)
+        sampled = head + mid_pool[::step][:5] + tail
+
+    valid_by_id = {str(c["id"]): c for c in sampled}
+    passages_xml = "\n\n".join(
+        f'<chunk id="{c["id"]}" page="{c["page_number"] or ""}">\n'
+        f'{c["text_content"][:1100]}\n</chunk>'
+        for c in sampled
+    )
+    authors_str = ", ".join(source_authors or []) or "the authors of this paper"
+
+    system_prompt = (
+        "You are Móyee Literature Review Analyst. Extract 8 structured fields for THIS specific "
+        "study from the provided <chunk> passages:\n"
+        "'aim', 'methodology', 'sample', 'data_collection', 'analysis', 'findings', "
+        "'limitations', 'relevance'.\n"
+        "Strict Rules:\n"
+        "1. Extract ONLY what the authors of THIS paper did and found. NEVER extract details "
+        "from their literature review of other authors (e.g., ignore 'Zhang (2025) found...') "
+        "and NEVER extract book titles from the References/Bibliography.\n"
+        "2. Repair any broken PDF spacing (e.g. write 'Qualitative', not 'Q ualitative') and "
+        "write complete, clean 1-2 sentence summaries (never cut off mid-word).\n"
+        "3. If a field is genuinely not reported in the provided chunks, set its 'value' to "
+        "'Not reported' and 'quote' and 'chunk_id' to null.\n"
+        "4. Each field must be a JSON object with keys: "
+        '"value" (string), "quote" (short verbatim phrase from the chunk, or null), '
+        'and "chunk_id" (exact id attribute of the supporting <chunk>, or null).'
+    )
+    user_prompt = (
+        f"Project Topic: {project_topic}\n"
+        f"Study Title: {source_title}\n"
+        f"Study Authors: {authors_str}\n\n"
+        f"Study Chunks:\n{passages_xml}"
+    )
+
+    parsed = _call_any_llm(system_prompt, user_prompt)
+    if not parsed:
+        return None
+
+    fields = (
+        "aim",
+        "methodology",
+        "sample",
+        "data_collection",
+        "analysis",
+        "findings",
+        "limitations",
+        "relevance",
+    )
+    out: dict[str, dict] = {}
+    for field_key in fields:
+        item = parsed.get(field_key)
+        if not isinstance(item, dict):
+            continue
+        val = str(item.get("value") or "").strip()
+        if not val or val.lower().startswith("not reported"):
+            out[field_key] = {
+                "value": "Not reported",
+                "page_number": None,
+                "quote": None,
+                "user_edited": False,
+            }
+            continue
+        cid = str(item.get("chunk_id") or "")
+        matched_chunk = valid_by_id.get(cid)
+        quote_raw = str(item.get("quote") or "").strip()
+        page_num = matched_chunk["page_number"] if matched_chunk else None
+        out[field_key] = {
+            "value": val[:340],
+            "page_number": page_num,
+            "quote": (quote_raw[:240] if quote_raw else val[:180]) if page_num else None,
+            "user_edited": False,
+        }
+    return out if out else None
+
+
+def generate_llm_matrix_synthesis(
+    *,
+    project_topic: str,
+    study_rows: list[dict],
+) -> dict | None:
+    """Use Gemini/Groq/Ollama to generate cross-study themes, methodological comparison & gaps."""
+    settings = get_settings()
+    if (
+        not (settings.gemini_api_key or settings.groq_api_key or settings.ollama_base_url)
+        or not study_rows
+    ):
+        return None
+
+    studies_json = json.dumps(study_rows, ensure_ascii=False, indent=2)
+    system_prompt = (
+        "You are Móyee Literature Synthesis Studio. Given the extracted Literature Matrix rows "
+        "for a set of studies, generate a rigorous academic cross-study synthesis.\n"
+        "Respond strictly as a JSON object with these keys:\n"
+        '- "themes": array of 3 to 4 objects, each with:\n'
+        '    - "theme": descriptive multi-word academic theme title (NEVER a single generic word '
+        "like 'These' or 'Study')\n"
+        '    - "sources": array of exact study labels '
+        '(e.g. ["(Alzahrani, 2026)", "(Weston & Long, 2026)"])\n'
+        '    - "summary": 1-2 sentence synthesis comparing what those specific studies found\n'
+        '- "methodological_comparison": 2-3 sentence paragraph comparing the research designs, '
+        "samples, and analytical approaches across the studies\n"
+        '- "potential_gaps": array of 3 specific strings, each starting with '
+        '"Potential gap (requires human verification): " and identifying methodological, '
+        "contextual, or empirical gaps across the compared studies."
+    )
+    user_prompt = f"Project Topic: {project_topic}\n\nCompared Studies:\n{studies_json}"
+    parsed = _call_any_llm(system_prompt, user_prompt)
+    if not parsed:
+        return None
+
+    raw_themes = parsed.get("themes")
+    method_comp = str(parsed.get("methodological_comparison") or "").strip()
+    raw_gaps = parsed.get("potential_gaps")
+    if not isinstance(raw_themes, list) or not method_comp or not isinstance(raw_gaps, list):
+        return None
+
+    clean_themes: list[dict] = []
+    for t in raw_themes[:5]:
+        if not isinstance(t, dict):
+            continue
+        theme_name = str(t.get("theme") or "").strip()
+        srcs = [str(s).strip() for s in (t.get("sources") or []) if str(s).strip()]
+        summary = str(t.get("summary") or "").strip()
+        if theme_name and summary:
+            clean_themes.append(
+                {
+                    "theme": theme_name,
+                    "sources": srcs,
+                    "summary": summary,
+                }
+            )
+    if not clean_themes:
+        return None
+
+    clean_gaps: list[str] = []
+    for g in raw_gaps[:4]:
+        g_str = str(g).strip()
+        if not g_str:
+            continue
+        if not g_str.lower().startswith("potential gap"):
+            g_str = f"Potential gap (requires human verification): {g_str}"
+        clean_gaps.append(g_str)
+
+    return {
+        "themes": clean_themes,
+        "methodological_comparison": method_comp,
+        "potential_gaps": clean_gaps,
+    }
