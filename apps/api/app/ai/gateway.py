@@ -91,7 +91,13 @@ def _parse_structured_json(raw_text: str) -> dict | None:
     return None
 
 
-def _call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str) -> dict | None:
+def _call_gemini(
+    system_prompt: str,
+    user_prompt: str,
+    api_key: str,
+    model: str,
+    timeout: float = 20.0,
+) -> dict | None:
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -103,7 +109,7 @@ def _call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str)
     models_to_try = [model]
     if model != "gemini-3-flash-preview":
         models_to_try.append("gemini-3-flash-preview")
-    with httpx.Client(timeout=25.0) as client:
+    with httpx.Client(timeout=timeout) as client:
         for m in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
             resp = client.post(url, params={"key": api_key}, json=payload)
@@ -120,13 +126,19 @@ def _call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str)
     return _parse_structured_json(text)
 
 
-def _call_groq(system_prompt: str, user_prompt: str, api_key: str, model: str) -> dict | None:
+def _call_groq(
+    system_prompt: str,
+    user_prompt: str,
+    api_key: str,
+    model: str,
+    timeout: float = 20.0,
+) -> dict | None:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     models_to_try = [model]
     if model != "openai/gpt-oss-120b":
         models_to_try.append("openai/gpt-oss-120b")
-    with httpx.Client(timeout=25.0) as client:
+    with httpx.Client(timeout=timeout) as client:
         for m in models_to_try:
             payload = {
                 "model": m,
@@ -635,13 +647,19 @@ def generate_llm_document_summary(chunks: list[dict]) -> dict[str, dict] | None:
     return None
 
 
-def _call_any_llm(system_prompt: str, user_prompt: str) -> dict | None:
+def _call_any_llm(
+    system_prompt: str, user_prompt: str, timeout: float = 10.0
+) -> dict | None:
     """Try Gemini -> Groq -> Ollama in order and return parsed JSON or None."""
     settings = get_settings()
     if settings.gemini_api_key:
         try:
             parsed = _call_gemini(
-                system_prompt, user_prompt, settings.gemini_api_key, settings.gemini_model
+                system_prompt,
+                user_prompt,
+                settings.gemini_api_key,
+                settings.gemini_model,
+                timeout=timeout,
             )
             if parsed and isinstance(parsed, dict):
                 return parsed
@@ -651,7 +669,11 @@ def _call_any_llm(system_prompt: str, user_prompt: str) -> dict | None:
     if settings.groq_api_key:
         try:
             parsed = _call_groq(
-                system_prompt, user_prompt, settings.groq_api_key, settings.groq_model
+                system_prompt,
+                user_prompt,
+                settings.groq_api_key,
+                settings.groq_model,
+                timeout=timeout,
             )
             if parsed and isinstance(parsed, dict):
                 return parsed
@@ -675,7 +697,7 @@ def generate_llm_matrix_cells(
     *,
     project_topic: str,
     source_title: str,
-    source_authors: list[str] | None,
+    source_authors: list | None,
     chunks: list[dict],
 ) -> dict[str, dict] | None:
     """Use Gemini/Groq/Ollama to extract Literature Matrix cells for a single study."""
@@ -686,87 +708,96 @@ def generate_llm_matrix_cells(
     ):
         return None
 
-    # Sample up to 14 non-reference chunks across beginning, middle, and discussion/limitations
-    if len(chunks) <= 14:
-        sampled = chunks
-    else:
-        head = chunks[:5]
-        tail = chunks[-4:]
-        mid_pool = chunks[5:-4]
-        step = max(1, len(mid_pool) // 5)
-        sampled = head + mid_pool[::step][:5] + tail
+    try:
+        # Sample up to 10 non-reference chunks across beginning, middle, and discussion
+        if len(chunks) <= 10:
+            sampled = chunks
+        else:
+            head = chunks[:4]
+            tail = chunks[-3:]
+            mid_pool = chunks[4:-3]
+            step = max(1, len(mid_pool) // 3)
+            sampled = head + mid_pool[::step][:3] + tail
 
-    valid_by_id = {str(c["id"]): c for c in sampled}
-    passages_xml = "\n\n".join(
-        f'<chunk id="{c["id"]}" page="{c["page_number"] or ""}">\n'
-        f'{c["text_content"][:1100]}\n</chunk>'
-        for c in sampled
-    )
-    authors_str = ", ".join(source_authors or []) or "the authors of this paper"
+        valid_by_id = {str(c["id"]): c for c in sampled}
+        passages_xml = "\n\n".join(
+            f'<chunk id="{c["id"]}" page="{c["page_number"] or ""}">\n'
+            f'{c["text_content"][:900]}\n</chunk>'
+            for c in sampled
+        )
+        author_names = [
+            str(a.get("name") if isinstance(a, dict) else a).strip()
+            for a in (source_authors or [])
+            if a
+        ]
+        authors_str = ", ".join(n for n in author_names if n) or "the authors of this paper"
 
-    system_prompt = (
-        "You are Móyee Literature Review Analyst. Extract 8 structured fields for THIS specific "
-        "study from the provided <chunk> passages:\n"
-        "'aim', 'methodology', 'sample', 'data_collection', 'analysis', 'findings', "
-        "'limitations', 'relevance'.\n"
-        "Strict Rules:\n"
-        "1. Extract ONLY what the authors of THIS paper did and found. NEVER extract details "
-        "from their literature review of other authors (e.g., ignore 'Zhang (2025) found...') "
-        "and NEVER extract book titles from the References/Bibliography.\n"
-        "2. Repair any broken PDF spacing (e.g. write 'Qualitative', not 'Q ualitative') and "
-        "write complete, clean 1-2 sentence summaries (never cut off mid-word).\n"
-        "3. If a field is genuinely not reported in the provided chunks, set its 'value' to "
-        "'Not reported' and 'quote' and 'chunk_id' to null.\n"
-        "4. Each field must be a JSON object with keys: "
-        '"value" (string), "quote" (short verbatim phrase from the chunk, or null), '
-        'and "chunk_id" (exact id attribute of the supporting <chunk>, or null).'
-    )
-    user_prompt = (
-        f"Project Topic: {project_topic}\n"
-        f"Study Title: {source_title}\n"
-        f"Study Authors: {authors_str}\n\n"
-        f"Study Chunks:\n{passages_xml}"
-    )
+        system_prompt = (
+            "You are Móyee Literature Review Analyst. Extract 8 structured fields for THIS "
+            "specific study from the provided <chunk> passages:\n"
+            "'aim', 'methodology', 'sample', 'data_collection', 'analysis', 'findings', "
+            "'limitations', 'relevance'.\n"
+            "Strict Rules:\n"
+            "1. Extract ONLY what the authors of THIS paper did and found. NEVER extract details "
+            "from their literature review of other authors (e.g., ignore 'Zhang (2025) found...') "
+            "and NEVER extract book titles from the References/Bibliography.\n"
+            "2. Repair any broken PDF spacing (e.g. write 'Qualitative', not 'Q ualitative') and "
+            "write complete, clean 1-2 sentence summaries (never cut off mid-word).\n"
+            "3. If a field is genuinely not reported in the provided chunks, set its 'value' to "
+            "'Not reported' and 'quote' and 'chunk_id' to null.\n"
+            "4. Each field must be a JSON object with keys: "
+            '"value" (string), "quote" (short verbatim phrase from the chunk, or null), '
+            'and "chunk_id" (exact id attribute of the supporting <chunk>, or null).'
+        )
+        user_prompt = (
+            f"Project Topic: {project_topic}\n"
+            f"Study Title: {source_title}\n"
+            f"Study Authors: {authors_str}\n\n"
+            f"Study Chunks:\n{passages_xml}"
+        )
 
-    parsed = _call_any_llm(system_prompt, user_prompt)
-    if not parsed:
-        return None
+        parsed = _call_any_llm(system_prompt, user_prompt, timeout=9.0)
+        if not parsed:
+            return None
 
-    fields = (
-        "aim",
-        "methodology",
-        "sample",
-        "data_collection",
-        "analysis",
-        "findings",
-        "limitations",
-        "relevance",
-    )
-    out: dict[str, dict] = {}
-    for field_key in fields:
-        item = parsed.get(field_key)
-        if not isinstance(item, dict):
-            continue
-        val = str(item.get("value") or "").strip()
-        if not val or val.lower().startswith("not reported"):
+        fields = (
+            "aim",
+            "methodology",
+            "sample",
+            "data_collection",
+            "analysis",
+            "findings",
+            "limitations",
+            "relevance",
+        )
+        out: dict[str, dict] = {}
+        for field_key in fields:
+            item = parsed.get(field_key)
+            if not isinstance(item, dict):
+                continue
+            val = str(item.get("value") or "").strip()
+            if not val or val.lower().startswith("not reported"):
+                out[field_key] = {
+                    "value": "Not reported",
+                    "page_number": None,
+                    "quote": None,
+                    "user_edited": False,
+                }
+                continue
+            cid = str(item.get("chunk_id") or "")
+            matched_chunk = valid_by_id.get(cid)
+            quote_raw = str(item.get("quote") or "").strip()
+            page_num = matched_chunk["page_number"] if matched_chunk else None
             out[field_key] = {
-                "value": "Not reported",
-                "page_number": None,
-                "quote": None,
+                "value": val[:340],
+                "page_number": page_num,
+                "quote": (quote_raw[:240] if quote_raw else val[:180]) if page_num else None,
                 "user_edited": False,
             }
-            continue
-        cid = str(item.get("chunk_id") or "")
-        matched_chunk = valid_by_id.get(cid)
-        quote_raw = str(item.get("quote") or "").strip()
-        page_num = matched_chunk["page_number"] if matched_chunk else None
-        out[field_key] = {
-            "value": val[:340],
-            "page_number": page_num,
-            "quote": (quote_raw[:240] if quote_raw else val[:180]) if page_num else None,
-            "user_edited": False,
-        }
-    return out if out else None
+        return out if out else None
+    except Exception as exc:
+        logger.warning("Matrix cell LLM extraction failed (%s)", type(exc).__name__)
+        return None
 
 
 def generate_llm_matrix_synthesis(

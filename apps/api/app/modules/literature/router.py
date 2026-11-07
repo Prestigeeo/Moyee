@@ -51,6 +51,18 @@ def get_matrix(
     return service._to_matrix_detail(db, project, matrix)
 
 
+@router.post("/{matrix_id}/regenerate", response_model=MatrixDetailOut)
+def regenerate_matrix(
+    project_id: uuid.UUID,
+    matrix_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(db, user.id, project_id)
+    matrix = service.get_owned_matrix(db, user.id, project_id, matrix_id)
+    return service.regenerate_matrix(db, project, matrix)
+
+
 @router.patch("/{matrix_id}/entries/{entry_id}", response_model=MatrixDetailOut)
 def edit_matrix_cell(
     project_id: uuid.UUID,

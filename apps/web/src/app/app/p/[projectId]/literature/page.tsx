@@ -13,6 +13,7 @@ import {
   Pencil,
   PenTool,
   Plus,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import { Alert, Badge, Button, Card, Input, Label, Textarea } from "@/components/ui";
@@ -51,6 +52,7 @@ export default function LiteraturePage() {
     value: string;
   } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
   const [copiedMatrix, setCopiedMatrix] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
@@ -321,6 +323,23 @@ export default function LiteraturePage() {
     }
   }
 
+  async function refreshActiveMatrix() {
+    if (!activeMatrix || regenerating) return;
+    setRegenerating(true);
+    setError(null);
+    try {
+      const updated = await browserApi<MatrixDetail>(
+        `/projects/${projectId}/matrices/${activeMatrix.id}/regenerate`,
+        { method: "POST" },
+      );
+      setActiveMatrix(updated);
+    } catch {
+      setError("Could not refresh literature matrix.");
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -344,6 +363,19 @@ export default function LiteraturePage() {
           </Button>
           {activeMatrix && (
             <>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={regenerating}
+                onClick={refreshActiveMatrix}
+              >
+                <RefreshCw
+                  className={`size-4 ${regenerating ? "animate-spin" : ""}`}
+                  aria-hidden
+                />
+                {regenerating ? "Refreshing…" : "Refresh Matrix"}
+              </Button>
               <Button type="button" variant="secondary" size="sm" onClick={copyMatrixToClipboard}>
                 {copiedMatrix ? (
                   <>

@@ -13,6 +13,7 @@ import io
 import re
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 from docx import Document as DocxDocument
 from fastapi import HTTPException, status
@@ -235,16 +236,9 @@ def _filter_non_reference_chunks(chunks: list[DocumentChunk]) -> list[DocumentCh
     return filtered if filtered else list(chunks)
 
 
-def _extract_cells_for_source(
-    db: Session, project: Project, source: ProjectSource
+def _extract_cells_from_chunks(
+    project: Project, source: ProjectSource, raw_chunks: list[DocumentChunk]
 ) -> dict[str, dict]:
-    raw_chunks = list(
-        db.scalars(
-            select(DocumentChunk)
-            .where(DocumentChunk.project_source_id == source.id)
-            .order_by(DocumentChunk.chunk_index)
-        ).all()
-    )
     chunks = _filter_non_reference_chunks(raw_chunks)
 
     chunk_dicts = [
@@ -579,6 +573,27 @@ def create_matrix(db: Session, project: Project, data: MatrixCreate) -> MatrixDe
             detail="Select at least one valid project source.",
         )
 
+    # 1. Load all chunks from DB first (never hold a DB transaction open during LLM calls)
+    chunks_by_source: dict[uuid.UUID, list[DocumentChunk]] = {}
+    for src in sources:
+        chunks_by_source[src.id] = list(
+            db.scalars(
+                select(DocumentChunk)
+                .where(DocumentChunk.project_source_id == src.id)
+                .order_by(DocumentChunk.chunk_index)
+            ).all()
+        )
+
+    # 2. Extract cells across all selected sources in parallel (~5s total instead of 35s)
+    with ThreadPoolExecutor(max_workers=min(5, len(sources))) as pool:
+        extracted_cells_list = list(
+            pool.map(
+                lambda s: _extract_cells_from_chunks(project, s, chunks_by_source[s.id]),
+                sources,
+            )
+        )
+
+    # 3. Persist matrix & entries, then compute synthesis
     matrix = LiteratureMatrix(
         project_id=project.id,
         owner_id=project.owner_id,
@@ -589,8 +604,7 @@ def create_matrix(db: Session, project: Project, data: MatrixCreate) -> MatrixDe
     db.flush()
 
     pairs: list[tuple[LiteratureEntry, ProjectSource]] = []
-    for src in sources:
-        cells = _extract_cells_for_source(db, project, src)
+    for src, cells in zip(sources, extracted_cells_list, strict=False):
         entry = LiteratureEntry(
             matrix_id=matrix.id,
             project_source_id=src.id,
@@ -599,6 +613,49 @@ def create_matrix(db: Session, project: Project, data: MatrixCreate) -> MatrixDe
             cells=cells,
         )
         db.add(entry)
+        pairs.append((entry, src))
+
+    matrix.synthesis_notes = _build_synthesis(project, pairs)
+    db.commit()
+    db.refresh(matrix)
+    return _to_matrix_detail(db, project, matrix)
+
+
+def regenerate_matrix(
+    db: Session, project: Project, matrix: LiteratureMatrix
+) -> MatrixDetailOut:
+    """Re-extract all cells and synthesis for an existing matrix without hitting project quota."""
+    rows = db.execute(
+        select(LiteratureEntry, ProjectSource)
+        .join(ProjectSource, LiteratureEntry.project_source_id == ProjectSource.id)
+        .where(LiteratureEntry.matrix_id == matrix.id)
+        .order_by(LiteratureEntry.created_at.asc())
+    ).all()
+    if not rows:
+        return _to_matrix_detail(db, project, matrix)
+
+    sources = [src for _, src in rows]
+    chunks_by_source: dict[uuid.UUID, list[DocumentChunk]] = {}
+    for src in sources:
+        chunks_by_source[src.id] = list(
+            db.scalars(
+                select(DocumentChunk)
+                .where(DocumentChunk.project_source_id == src.id)
+                .order_by(DocumentChunk.chunk_index)
+            ).all()
+        )
+
+    with ThreadPoolExecutor(max_workers=min(5, len(sources))) as pool:
+        extracted_cells_list = list(
+            pool.map(
+                lambda s: _extract_cells_from_chunks(project, s, chunks_by_source[s.id]),
+                sources,
+            )
+        )
+
+    pairs: list[tuple[LiteratureEntry, ProjectSource]] = []
+    for (entry, src), cells in zip(rows, extracted_cells_list, strict=False):
+        entry.cells = cells
         pairs.append((entry, src))
 
     matrix.synthesis_notes = _build_synthesis(project, pairs)
