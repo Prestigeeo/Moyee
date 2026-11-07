@@ -62,7 +62,7 @@ def extract_pdf_pages(raw_bytes: bytes) -> list[ExtractedPage]:
     pages: list[ExtractedPage] = []
     total_chars = 0
     for idx, page in enumerate(reader.pages, start=1):
-        raw_text = page.extract_text() or ""
+        raw_text = (page.extract_text() or "").replace("\x00", "")
         cleaned = re.sub(r"[ \t]+", " ", raw_text)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         total_chars += len(cleaned)

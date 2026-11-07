@@ -43,9 +43,15 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
+    origins = [
+        o.strip().rstrip("/")
+        for o in settings.web_origin.split(",")
+        if o.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.web_origin],
+        allow_origins=origins,
+        allow_origin_regex=r"^https://.*\.vercel\.app$|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -64,7 +70,16 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(_: Request, exc: Exception):
+        logger.exception("Unhandled error: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Server error ({type(exc).__name__}). Please try again."},
+        )
+
     @app.get("/health", tags=["system"])
+    @app.get("/healthz", tags=["system"])
     def health():
         return {"status": "ok"}
 

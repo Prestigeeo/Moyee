@@ -190,7 +190,12 @@ def save_discovered_source(
     db.refresh(ps)
 
     if data.auto_import_pdf and (ps.oa_pdf_url or ps.source_url):
-        import_open_access_pdf(db, project, ps, raise_on_error=False)
+        try:
+            import_open_access_pdf(db, project, ps, raise_on_error=False)
+        except Exception as exc:
+            logger.warning("Auto PDF import skipped (%s)", type(exc).__name__)
+            db.rollback()
+            db.refresh(ps)
     return ps
 
 

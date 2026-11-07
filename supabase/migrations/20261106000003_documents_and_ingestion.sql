@@ -45,7 +45,8 @@ create table if not exists public.document_chunks (
   char_end integer not null default 0,
   text_content text not null,
   embedding jsonb,                    -- portable vector representation; pgvector index optional
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 create index if not exists document_chunks_project_idx on public.document_chunks (project_id);
 create index if not exists document_chunks_source_idx on public.document_chunks (project_source_id);
