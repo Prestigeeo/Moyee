@@ -20,12 +20,12 @@ export default function DiscoverPage() {
   const searchParams = useSearchParams();
   const initialQ = searchParams.get("q") ?? "";
   const [query, setQuery] = useState(initialQ);
-  const [provider, setProvider] = useState("all");
+  const [provider, setProvider] = useState("openalex");
   const [yearFrom, setYearFrom] = useState("");
   const [yearTo, setYearTo] = useState("");
   const [openAccessOnly, setOpenAccessOnly] = useState(false);
   const [pubType, setPubType] = useState("");
-  const [perPage, setPerPage] = useState(25);
+  const [perPage, setPerPage] = useState(20);
   const [page, setPage] = useState(1);
   const [results, setResults] = useState<DiscoveredWork[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -71,12 +71,12 @@ export default function DiscoverPage() {
     return savedMap[`title:${w.title.toLowerCase()}`] ?? null;
   }
 
-  function buildSearchParams(targetPage: number) {
+  function buildSearchParams(targetPage: number, safePerPage = perPage) {
     const qs = new URLSearchParams({
       q: query.trim(),
       provider,
       page: String(targetPage),
-      per_page: String(perPage),
+      per_page: String(safePerPage),
     });
     if (yearFrom) qs.set("year_from", yearFrom);
     if (yearTo) qs.set("year_to", yearTo);
@@ -85,16 +85,31 @@ export default function DiscoverPage() {
     return qs;
   }
 
+  async function fetchSearchWithFallback(targetPage: number): Promise<DiscoverySearchResponse> {
+    try {
+      const qs = buildSearchParams(targetPage, perPage);
+      return await browserApi<DiscoverySearchResponse>(`/discovery/search?${qs.toString()}`);
+    } catch (err) {
+      // Fallback to per_page=25 if the backend container hasn't updated its per_page cap yet
+      if (err instanceof ApiError && err.status === 422 && perPage > 25) {
+        const fallbackQs = buildSearchParams(targetPage, 25);
+        return await browserApi<DiscoverySearchResponse>(
+          `/discovery/search?${fallbackQs.toString()}`,
+        );
+      }
+      throw err;
+    }
+  }
+
   async function onSearch(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (query.trim().length < 2) return;
     setLoading(true);
     setError(null);
     setPage(1);
-    const qs = buildSearchParams(1);
 
     try {
-      const data = await browserApi<DiscoverySearchResponse>(`/discovery/search?${qs.toString()}`);
+      const data = await fetchSearchWithFallback(1);
       setResults(data.results);
       setTotal(data.total);
     } catch (err) {
@@ -113,10 +128,9 @@ export default function DiscoverPage() {
     const nextPage = page + 1;
     setLoadingMore(true);
     setError(null);
-    const qs = buildSearchParams(nextPage);
 
     try {
-      const data = await browserApi<DiscoverySearchResponse>(`/discovery/search?${qs.toString()}`);
+      const data = await fetchSearchWithFallback(nextPage);
       setResults((prev) => {
         const seen = new Set(prev.map((w) => w.external_id));
         const nextItems = data.results.filter((w) => !seen.has(w.external_id));
@@ -251,7 +265,8 @@ export default function DiscoverPage() {
                 onChange={(e) => setPerPage(Number(e.target.value))}
               >
                 <option value="15">15 per page</option>
-                <option value="25">25 per page</option>
+                <option value="20">20 per page</option>
+                <option value="35">35 per page</option>
                 <option value="50">50 per page</option>
               </Select>
             </div>

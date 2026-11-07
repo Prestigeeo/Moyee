@@ -336,9 +336,8 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
   const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
-  let res: Response;
-  try {
-    res = await fetch(`${API_URL}/v1${path}`, {
+  const doRequest = () =>
+    fetch(`${API_URL}/v1${path}`, {
       ...init,
       cache: "no-store",
       headers: {
@@ -347,6 +346,14 @@ export async function apiFetch<T>(path: string, token: string | null, init: Requ
         ...init.headers,
       },
     });
+
+  let res: Response;
+  try {
+    res = await doRequest();
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      await new Promise((r) => setTimeout(r, 1200));
+      res = await doRequest();
+    }
   } catch {
     throw new ApiError(0, "Can't reach the Móyee server. Check your connection and try again.");
   }
@@ -365,7 +372,14 @@ export async function apiFetch<T>(path: string, token: string | null, init: Requ
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const detail = typeof body.detail === "string" ? body.detail : "Something went wrong.";
+    let detail = "Something went wrong.";
+    if (typeof body.detail === "string") {
+      detail = body.detail;
+    } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+      detail = body.detail
+        .map((d: { msg?: string; loc?: string[] }) => d.msg ?? "Invalid parameter")
+        .join("; ");
+    }
     throw new ApiError(res.status, detail, body);
   }
   return body as T;

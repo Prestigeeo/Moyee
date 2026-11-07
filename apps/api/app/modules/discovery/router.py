@@ -19,8 +19,8 @@ def search_academic_works(
     year_to: int | None = Query(default=None, ge=1800, le=2100),
     open_access_only: bool = False,
     publication_type: str | None = Query(default=None, max_length=64),
-    page: int = Query(default=1, ge=1, le=100),
-    per_page: int = Query(default=25, ge=1, le=50),
+    page: int = Query(default=1, ge=1, le=500),
+    per_page: int = Query(default=25, ge=1, le=100),
     user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

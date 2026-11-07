@@ -49,11 +49,11 @@ def reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str | N
 
 
 def _split_name(full_name: str) -> AuthorItem:
-    cleaned = " ".join(full_name.split())
+    cleaned = " ".join(full_name.split())[:200]
     parts = cleaned.rsplit(" ", 1)
     if len(parts) == 2:
-        return AuthorItem(name=cleaned, given=parts[0], family=parts[1])
-    return AuthorItem(name=cleaned, given=None, family=cleaned)
+        return AuthorItem(name=cleaned, given=parts[0][:120], family=parts[1][:120])
+    return AuthorItem(name=cleaned, given=None, family=cleaned[:120])
 
 
 def normalize_pdf_url(url: str | None) -> str | None:
@@ -202,55 +202,62 @@ def _search_crossref(
 
     out: list[DiscoveredWork] = []
     for item in msg.get("items") or []:
-        titles = item.get("title") or []
-        title = (titles[0] if titles else "").strip()
-        doi = extract_doi(item.get("DOI") or "")
-        if not title or not doi:
-            continue
-        authors: list[AuthorItem] = []
-        for a in item.get("author") or []:
-            given = (a.get("given") or "").strip()
-            family = (a.get("family") or "").strip()
-            full = f"{given} {family}".strip() or (a.get("name") or "").strip()
-            if full:
-                authors.append(AuthorItem(name=full, given=given or None, family=family or None))
-        pub_year = None
-        for date_key in ("published-print", "published-online", "issued"):
-            parts = ((item.get(date_key) or {}).get("date-parts") or [[]])[0]
-            if parts and isinstance(parts[0], int):
-                pub_year = parts[0]
-                break
-        containers = item.get("container-title") or []
-        venue = (containers[0] if containers else "").strip() or None
-        raw_abs = item.get("abstract") or ""
-        clean_abs = re.sub(r"<[^>]+>", " ", raw_abs).strip() if raw_abs else None
-        pdf_url = None
-        for link in item.get("link") or []:
-            if isinstance(link, dict) and "pdf" in str(link.get("content-type", "")).lower():
-                pdf_url = link.get("URL")
-                break
-        out.append(
-            DiscoveredWork(
-                provider="crossref",
-                external_id=f"cr:{doi}",
-                doi=doi,
-                title=title,
-                authors=authors,
-                abstract=clean_abs,
-                publication_year=pub_year,
-                venue=venue,
-                publisher=item.get("publisher"),
-                publication_type=item.get("type") or "article",
-                volume=item.get("volume"),
-                issue=item.get("issue"),
-                pages=item.get("page"),
-                source_url=item.get("URL") or f"https://doi.org/{doi}",
-                oa_pdf_url=pdf_url,
-                is_open_access=bool(pdf_url),
-                citation_count=item.get("is-referenced-by-count"),
-                keywords=[],
+        try:
+            titles = item.get("title") or []
+            title = (titles[0] if titles else "").strip()
+            doi = extract_doi(item.get("DOI") or "")
+            if not title or not doi:
+                continue
+            authors: list[AuthorItem] = []
+            for a in (item.get("author") or [])[:25]:
+                given = (a.get("given") or "").strip()[:120]
+                family = (a.get("family") or "").strip()[:120]
+                full = (f"{given} {family}".strip() or (a.get("name") or "").strip())[:200]
+                if full:
+                    authors.append(
+                        AuthorItem(name=full, given=given or None, family=family or None)
+                    )
+            pub_year = None
+            for date_key in ("published-print", "published-online", "issued"):
+                date_parts = (item.get(date_key) or {}).get("date-parts") or []
+                parts = date_parts[0] if date_parts and isinstance(date_parts[0], list) else []
+                if parts and isinstance(parts[0], int):
+                    pub_year = parts[0]
+                    break
+            containers = item.get("container-title") or []
+            venue = (containers[0] if containers else "").strip() or None
+            raw_abs = item.get("abstract") or ""
+            clean_abs = re.sub(r"<[^>]+>", " ", str(raw_abs)).strip() if raw_abs else None
+            pdf_url = None
+            for link in item.get("link") or []:
+                if isinstance(link, dict) and "pdf" in str(link.get("content-type", "")).lower():
+                    pdf_url = str(link.get("URL") or "").strip() or None
+                    break
+            ref_cnt = item.get("is-referenced-by-count")
+            out.append(
+                DiscoveredWork(
+                    provider="crossref",
+                    external_id=f"cr:{doi}",
+                    doi=doi,
+                    title=title,
+                    authors=authors,
+                    abstract=clean_abs,
+                    publication_year=pub_year,
+                    venue=venue,
+                    publisher=str(item.get("publisher") or "").strip() or None,
+                    publication_type=str(item.get("type") or "article"),
+                    volume=str(item.get("volume") or "").strip() or None,
+                    issue=str(item.get("issue") or "").strip() or None,
+                    pages=str(item.get("page") or "").strip() or None,
+                    source_url=str(item.get("URL") or f"https://doi.org/{doi}"),
+                    oa_pdf_url=pdf_url,
+                    is_open_access=bool(pdf_url),
+                    citation_count=int(ref_cnt) if isinstance(ref_cnt, int) else None,
+                    keywords=[],
+                )
             )
-        )
+        except Exception:
+            continue
     return out, int(msg.get("total-results") or len(out))
 
 
@@ -291,44 +298,52 @@ def _search_semantic_scholar(
 
     out: list[DiscoveredWork] = []
     for item in body.get("data") or []:
-        title = (item.get("title") or "").strip()
-        pid = item.get("paperId") or ""
-        if not title or not pid:
-            continue
-        ext_ids = item.get("externalIds") or {}
-        doi = extract_doi(ext_ids.get("DOI") or "") if ext_ids.get("DOI") else None
-        arxiv_id = ext_ids.get("ArXiv")
-        oa_pdf = (item.get("openAccessPdf") or {}).get("url")
-        if not oa_pdf and arxiv_id:
-            oa_pdf = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-        is_oa = bool(item.get("isOpenAccess")) or bool(oa_pdf)
-        authors = [
-            _split_name(a.get("name", ""))
-            for a in (item.get("authors") or [])
-            if (a.get("name") or "").strip()
-        ]
-        out.append(
-            DiscoveredWork(
-                provider="semantic_scholar",
-                external_id=f"s2:{pid}",
-                doi=doi,
-                title=title,
-                authors=authors,
-                abstract=(item.get("abstract") or "").strip() or None,
-                publication_year=item.get("year"),
-                venue=(item.get("venue") or "").strip() or None,
-                publisher=None,
-                publication_type="article",
-                volume=None,
-                issue=None,
-                pages=None,
-                source_url=item.get("url") or (f"https://doi.org/{doi}" if doi else None),
-                oa_pdf_url=oa_pdf,
-                is_open_access=is_oa,
-                citation_count=item.get("citationCount"),
-                keywords=[],
+        try:
+            title = (item.get("title") or "").strip()
+            pid = item.get("paperId") or ""
+            if not title or not pid:
+                continue
+            ext_ids = item.get("externalIds") or {}
+            doi = extract_doi(str(ext_ids.get("DOI") or "")) if ext_ids.get("DOI") else None
+            arxiv_id = ext_ids.get("ArXiv")
+            oa_pdf = str((item.get("openAccessPdf") or {}).get("url") or "").strip() or None
+            if not oa_pdf and arxiv_id:
+                oa_pdf = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+            is_oa = bool(item.get("isOpenAccess")) or bool(oa_pdf)
+            authors = [
+                _split_name(str(a.get("name") or ""))
+                for a in (item.get("authors") or [])[:25]
+                if str(a.get("name") or "").strip()
+            ]
+            yr = item.get("year")
+            cit = item.get("citationCount")
+            out.append(
+                DiscoveredWork(
+                    provider="semantic_scholar",
+                    external_id=f"s2:{pid}",
+                    doi=doi,
+                    title=title,
+                    authors=authors,
+                    abstract=str(item.get("abstract") or "").strip() or None,
+                    publication_year=int(yr) if isinstance(yr, int) else None,
+                    venue=str(item.get("venue") or "").strip() or None,
+                    publisher=None,
+                    publication_type="article",
+                    volume=None,
+                    issue=None,
+                    pages=None,
+                    source_url=str(
+                        item.get("url") or (f"https://doi.org/{doi}" if doi else "")
+                    ).strip()
+                    or None,
+                    oa_pdf_url=oa_pdf,
+                    is_open_access=is_oa,
+                    citation_count=int(cit) if isinstance(cit, int) else None,
+                    keywords=[],
+                )
             )
-        )
+        except Exception:
+            continue
     return out, int(body.get("total") or len(out))
 
 
@@ -486,7 +501,10 @@ def search_works(
         results: list[DiscoveredWork] = []
         seen_keys: set[str] = set()
         for raw in payload.get("results") or []:
-            norm = normalize_openalex_work(raw)
+            try:
+                norm = normalize_openalex_work(raw)
+            except Exception:
+                norm = None
             if norm is not None:
                 key = (norm.doi or norm.title).lower()
                 seen_keys.add(key)
@@ -495,36 +513,37 @@ def search_works(
         total = int((payload.get("meta") or {}).get("count", len(results)))
 
         if provider == "all" and http_client is None:
-            s2_res, s2_total = _search_semantic_scholar(
-                cleaned,
-                year_from=year_from,
-                year_to=year_to,
-                open_access_only=open_access_only,
-                per_page=max(10, per_page // 2),
-                page=page,
-                client=client,
-            )
-            for w in s2_res:
-                key = (w.doi or w.title).lower()
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    results.append(w)
-            cr_res, cr_total = _search_crossref(
-                cleaned,
-                year_from=year_from,
-                year_to=year_to,
-                per_page=max(8, per_page // 3),
-                page=page,
-                client=client,
-            )
-            for w in cr_res:
-                if open_access_only and not w.is_open_access:
-                    continue
-                key = (w.doi or w.title).lower()
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    results.append(w)
-            total = total + s2_total + cr_total
+            with httpx.Client(timeout=3.5, headers=_headers()) as fast_client:
+                s2_res, s2_total = _search_semantic_scholar(
+                    cleaned,
+                    year_from=year_from,
+                    year_to=year_to,
+                    open_access_only=open_access_only,
+                    per_page=max(10, per_page // 2),
+                    page=page,
+                    client=fast_client,
+                )
+                for w in s2_res:
+                    key = (w.doi or w.title).lower()
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        results.append(w)
+                cr_res, cr_total = _search_crossref(
+                    cleaned,
+                    year_from=year_from,
+                    year_to=year_to,
+                    per_page=max(8, per_page // 3),
+                    page=page,
+                    client=fast_client,
+                )
+                for w in cr_res:
+                    if open_access_only and not w.is_open_access:
+                        continue
+                    key = (w.doi or w.title).lower()
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        results.append(w)
+                total = total + s2_total + cr_total
 
         return DiscoverySearchResponse(
             query=cleaned, total=total, page=page, per_page=per_page, results=results
