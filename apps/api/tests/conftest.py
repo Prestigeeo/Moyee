@@ -20,7 +20,14 @@ USER_B = uuid.UUID("00000000-0000-0000-0000-00000000000b")
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(settings, "groq_api_key", "")
+    monkeypatch.setattr(settings, "ollama_base_url", "")
+
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
