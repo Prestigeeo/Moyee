@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, get_current_user
@@ -91,4 +91,21 @@ def export_matrix_csv(
         content=csv_text,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{matrix.id}-matrix.csv"'},
+    )
+
+
+@router.get("/{matrix_id}/docx")
+def export_matrix_docx(
+    project_id: uuid.UUID,
+    matrix_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(db, user.id, project_id)
+    matrix = service.get_owned_matrix(db, user.id, project_id, matrix_id)
+    docx_bytes = service.export_matrix_docx(db, project, matrix)
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{matrix.id}-matrix.docx"'},
     )

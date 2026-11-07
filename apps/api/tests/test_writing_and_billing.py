@@ -84,6 +84,33 @@ def test_writing_studio_citations_assist_and_docx_export(client):
         == 404
     )
 
+    # 6. Append Assistant/Matrix content into Writing Studio and export Matrix DOCX
+    appended = client.post(
+        f"/v1/projects/{pid}/writing/append",
+        json={
+            "heading": "Assistant Synthesis",
+            "content": "Smallholder farmers adopt drought-tolerant varieties (Okafor, 2021).",
+            "cited_source_ids": [src["id"]],
+        },
+        headers=as_user(USER_A),
+    )
+    assert appended.status_code == 200
+    assert any("Assistant Synthesis" in s["content"] for s in appended.json()["sections"])
+
+    matrix = client.post(
+        f"/v1/projects/{pid}/matrices",
+        json={"name": "Maize Synthesis Matrix", "source_ids": [src["id"]]},
+        headers=as_user(USER_A),
+    ).json()
+    matrix_docx = client.get(
+        f"/v1/projects/{pid}/matrices/{matrix['id']}/docx",
+        headers=as_user(USER_A),
+    )
+    assert matrix_docx.status_code == 200
+    parsed_matrix = DocxDocument(io.BytesIO(matrix_docx.content))
+    assert len(parsed_matrix.tables) == 1
+    assert "Maize Synthesis Matrix" in "\n".join(p.text for p in parsed_matrix.paragraphs)
+
 
 def test_paystack_webhook_signature_and_pro_upgrade(client):
     client.get("/v1/me", headers=as_user(USER_A))

@@ -5,7 +5,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   AlertTriangle,
+  Check,
+  Copy,
   MessageSquarePlus,
+  PenTool,
   Send,
   ShieldCheck,
   Sparkles,
@@ -17,10 +20,13 @@ import { Alert, Badge, Button, Card, Select, Textarea } from "@/components/ui";
 import {
   ApiError,
   quotaMessage,
+  type AssistantMessage,
   type AssistantMode,
   type Conversation,
   type ConversationDetail,
+  type DocumentSectionItem,
   type ProjectSource,
+  type ResearchDocument,
 } from "@/lib/api";
 import { browserApi } from "@/lib/api/browser";
 
@@ -56,6 +62,11 @@ export default function AssistantPage() {
   const [mode, setMode] = useState<AssistantMode>("qa");
   const [question, setQuestion] = useState("");
   const [sending, setSending] = useState(false);
+  const [docSections, setDocSections] = useState<DocumentSectionItem[]>([]);
+  const [targetSectionByMsg, setTargetSectionByMsg] = useState<Record<string, string>>({});
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [addingMsgId, setAddingMsgId] = useState<string | null>(null);
+  const [addedNoticeByMsg, setAddedNoticeByMsg] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const openConversation = useCallback(
@@ -77,10 +88,14 @@ export default function AssistantPage() {
     Promise.all([
       browserApi<Conversation[]>(`/projects/${projectId}/conversations`),
       browserApi<ProjectSource[]>(`/projects/${projectId}/sources`),
+      browserApi<ResearchDocument>(`/projects/${projectId}/writing`).catch(() => null),
     ])
-      .then(([convs, srcs]) => {
+      .then(([convs, srcs, writingDoc]) => {
         setConversations(convs);
         setSources(srcs);
+        if (writingDoc?.sections) {
+          setDocSections(writingDoc.sections);
+        }
         if (convs.length > 0) {
           openConversation(convs[0].id);
         }
@@ -168,6 +183,72 @@ export default function AssistantPage() {
       if (activeConv) openConversation(activeConv.id);
     } catch {
       // ignore feedback errors
+    }
+  }
+
+  function formatMessageWithInlineCitations(msg: AssistantMessage): string {
+    let text = msg.content;
+    for (const c of msg.citations) {
+      const pagePart = c.page_number ? `, p. ${c.page_number}` : "";
+      const inline = c.inline_label.endsWith(")")
+        ? `${c.inline_label.slice(0, -1)}${pagePart})`
+        : `${c.inline_label}${pagePart}`;
+      text = text.replaceAll(`[${c.citation_number}]`, inline);
+    }
+    return text;
+  }
+
+  async function copyAssistantResponse(msg: AssistantMessage) {
+    const formattedAnswer = formatMessageWithInlineCitations(msg);
+    const refsBlock =
+      msg.citations.length > 0
+        ? "\n\nSources:\n" +
+          msg.citations
+            .map(
+              (c) =>
+                `[${c.citation_number}] ${c.inline_label} ${c.source_title} (${
+                  c.page_number ? `p. ${c.page_number}` : "abstract"
+                })`,
+            )
+            .join("\n")
+        : "";
+    const interpBlock = msg.interpretation
+      ? `\n\nInterpretation & Guidance:\n${msg.interpretation}`
+      : "";
+    await navigator.clipboard.writeText(`${formattedAnswer}${refsBlock}${interpBlock}`);
+    setCopiedMsgId(msg.id);
+    setTimeout(() => setCopiedMsgId((prev) => (prev === msg.id ? null : prev)), 2500);
+  }
+
+  async function addResponseToWritingStudio(msg: AssistantMessage) {
+    setAddingMsgId(msg.id);
+    setError(null);
+    try {
+      const defaultSec =
+        docSections.find((s) => /literature|related work/i.test(s.title))?.id ??
+        docSections[0]?.id ??
+        null;
+      const chosenSecId = targetSectionByMsg[msg.id] ?? defaultSec;
+      const formattedBody = formatMessageWithInlineCitations(msg);
+      const updatedDoc = await browserApi<ResearchDocument>(
+        `/projects/${projectId}/writing/append`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            section_id: chosenSecId,
+            content: formattedBody,
+            cited_source_ids: msg.citations.map((c) => c.project_source_id),
+          }),
+        },
+      );
+      setDocSections(updatedDoc.sections);
+      const secTitle =
+        updatedDoc.sections.find((s) => s.id === chosenSecId)?.title ?? "Writing Studio";
+      setAddedNoticeByMsg((prev) => ({ ...prev, [msg.id]: secTitle }));
+    } catch {
+      setError("Could not add response to Writing Studio.");
+    } finally {
+      setAddingMsgId(null);
     }
   }
 
@@ -322,10 +403,74 @@ export default function AssistantPage() {
                       </div>
                     )}
 
-                    {/* 4. Limitations & Suggested Next Actions */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-stone-500">
-                      <span>{msg.limitations}</span>
-                      <div className="flex items-center gap-1">
+                    {/* 4. Copy, Add to Writing Studio & Feedback Actions */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-200/80 pt-3 text-xs text-stone-500">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => copyAssistantResponse(msg)}
+                        >
+                          {copiedMsgId === msg.id ? (
+                            <>
+                              <Check className="size-3.5 text-emerald-600" aria-hidden /> Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="size-3.5" aria-hidden /> Copy response
+                            </>
+                          )}
+                        </Button>
+
+                        {docSections.length > 0 && (
+                          <Select
+                            aria-label="Target section in Writing Studio"
+                            value={
+                              targetSectionByMsg[msg.id] ??
+                              docSections.find((s) => /literature|related work/i.test(s.title))
+                                ?.id ??
+                              docSections[0]?.id ??
+                              ""
+                            }
+                            onChange={(e) =>
+                              setTargetSectionByMsg((prev) => ({
+                                ...prev,
+                                [msg.id]: e.target.value,
+                              }))
+                            }
+                            className="h-8 py-1 text-xs"
+                          >
+                            {docSections.map((sec) => (
+                              <option key={sec.id} value={sec.id}>
+                                Section: {sec.title}
+                              </option>
+                            ))}
+                          </Select>
+                        )}
+
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={addingMsgId === msg.id}
+                          onClick={() => addResponseToWritingStudio(msg)}
+                        >
+                          <PenTool className="size-3.5" aria-hidden />
+                          {addingMsgId === msg.id ? "Adding…" : "Add to Writing Studio"}
+                        </Button>
+
+                        {addedNoticeByMsg[msg.id] && (
+                          <Link
+                            href={`/app/p/${projectId}/write`}
+                            className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                          >
+                            ✓ Added to {addedNoticeByMsg[msg.id]} · Open Writing Studio →
+                          </Link>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="hidden sm:inline">{msg.limitations}</span>
                         <button
                           type="button"
                           onClick={() => sendFeedback(msg.id, 1)}

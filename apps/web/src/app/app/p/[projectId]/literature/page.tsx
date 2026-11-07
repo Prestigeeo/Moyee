@@ -3,7 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Download, Layers, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Layers,
+  Pencil,
+  PenTool,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { Alert, Badge, Button, Card, Input, Label, Textarea } from "@/components/ui";
 import {
   ApiError,
@@ -40,6 +51,10 @@ export default function LiteraturePage() {
     value: string;
   } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [copiedMatrix, setCopiedMatrix] = useState(false);
+  const [exportingDocx, setExportingDocx] = useState(false);
+  const [sendingToWrite, setSendingToWrite] = useState(false);
+  const [sentToWriteNotice, setSentToWriteNotice] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const openMatrix = useCallback(
@@ -143,6 +158,144 @@ export default function LiteraturePage() {
     }
   }
 
+  async function downloadDocx() {
+    if (!activeMatrix) return;
+    setExportingDocx(true);
+    setError(null);
+    try {
+      const blob = await browserApi<Blob>(
+        `/projects/${projectId}/matrices/${activeMatrix.id}/docx`,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${activeMatrix.name.toLowerCase().replace(/\s+/g, "-")}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Could not export Word (.docx) document.");
+    } finally {
+      setExportingDocx(false);
+    }
+  }
+
+  async function copyMatrixToClipboard() {
+    if (!activeMatrix) return;
+    const headers = ["Study", ...MATRIX_COLUMNS.map((c) => c.label)];
+    const tsvRows = [
+      headers.join("\t"),
+      ...activeMatrix.entries.map((entry) => {
+        const studyLabel = `${entry.author_year} — ${entry.title}`;
+        const colVals = MATRIX_COLUMNS.map((c) => {
+          const cell = entry.cells[c.key];
+          if (!cell) return "Not reported";
+          const page = cell.page_number != null ? ` [p. ${cell.page_number}]` : "";
+          return `${cell.value}${page}`.replace(/\s+/g, " ");
+        });
+        return [studyLabel, ...colVals].join("\t");
+      }),
+    ];
+
+    const notes = activeMatrix.synthesis_notes;
+    const synthLines = [
+      "",
+      "--- CROSS-STUDY SYNTHESIS ---",
+      ...notes.themes.map(
+        (t) => `• ${t.theme}${t.sources.length ? ` (${t.sources.join(", ")})` : ""}: ${t.summary}`,
+      ),
+      "",
+      `Methodological Comparison: ${notes.methodological_comparison}`,
+      "",
+      "Potential Research Gaps:",
+      ...notes.potential_gaps.map((g) => `• ${g}`),
+    ];
+    const plainText = [...tsvRows, ...synthLines].join("\n");
+
+    const htmlRows = activeMatrix.entries
+      .map((entry) => {
+        const tds = MATRIX_COLUMNS.map((c) => {
+          const cell = entry.cells[c.key];
+          const val = cell ? cell.value : "Not reported";
+          const page = cell?.page_number != null ? ` <em>[p. ${cell.page_number}]</em>` : "";
+          return `<td style="border:1px solid #d6d3d1;padding:8px;vertical-align:top;">${val}${page}</td>`;
+        }).join("");
+        return `<tr><td style="border:1px solid #d6d3d1;padding:8px;vertical-align:top;"><strong>${entry.author_year}</strong><br/>${entry.title}</td>${tds}</tr>`;
+      })
+      .join("");
+    const htmlTable = `<h3>${activeMatrix.name}</h3><table style="border-collapse:collapse;width:100%;font-size:12px;"><thead><tr>${headers
+      .map((h) => `<th style="border:1px solid #d6d3d1;background:#f5f5f4;padding:8px;text-align:left;">${h}</th>`)
+      .join("")}</tr></thead><tbody>${htmlRows}</tbody></table>`;
+
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
+            "text/html": new Blob([htmlTable], { type: "text/html" }),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(plainText);
+      }
+      setCopiedMatrix(true);
+      setTimeout(() => setCopiedMatrix(false), 2500);
+    } catch {
+      await navigator.clipboard.writeText(plainText);
+      setCopiedMatrix(true);
+      setTimeout(() => setCopiedMatrix(false), 2500);
+    }
+  }
+
+  async function sendSynthesisToWritingStudio() {
+    if (!activeMatrix) return;
+    setSendingToWrite(true);
+    setError(null);
+    try {
+      const notes = activeMatrix.synthesis_notes;
+      const studySummaries = activeMatrix.entries.map((entry) => {
+        const aim = entry.cells.aim?.value ?? "Not reported";
+        const method = entry.cells.methodology?.value ?? "Not reported";
+        const findings = entry.cells.findings?.value ?? "Not reported";
+        return `• ${entry.author_year} (${entry.title}): Aim — ${aim} Methodology — ${method} Key findings — ${findings}`;
+      });
+      const themesBlock = notes.themes
+        .map(
+          (t) =>
+            `• ${t.theme}${t.sources.length ? ` (${t.sources.join(", ")})` : ""}: ${t.summary}`,
+        )
+        .join("\n");
+      const gapsBlock = notes.potential_gaps.map((g) => `• ${g}`).join("\n");
+
+      const content = [
+        "Comparative Study Summary:",
+        ...studySummaries,
+        "",
+        "Recurring Themes across Studies:",
+        themesBlock,
+        "",
+        `Methodological Comparison:\n${notes.methodological_comparison}`,
+        "",
+        "Identified Research Gaps:",
+        gapsBlock,
+      ].join("\n");
+
+      await browserApi(`/projects/${projectId}/writing/append`, {
+        method: "POST",
+        body: JSON.stringify({
+          heading: activeMatrix.name,
+          content,
+          cited_source_ids: activeMatrix.entries.map((e) => e.project_source_id),
+        }),
+      });
+      setSentToWriteNotice(true);
+      setTimeout(() => setSentToWriteNotice(false), 5000);
+    } catch {
+      setError("Could not add synthesis to Writing Studio.");
+    } finally {
+      setSendingToWrite(false);
+    }
+  }
+
   async function removeMatrix(matrixId: string) {
     if (!confirm("Delete this literature matrix?")) return;
     try {
@@ -170,7 +323,7 @@ export default function LiteraturePage() {
             to edit or jump to its source page.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
             variant="secondary"
@@ -181,8 +334,38 @@ export default function LiteraturePage() {
           </Button>
           {activeMatrix && (
             <>
+              <Button type="button" variant="secondary" size="sm" onClick={copyMatrixToClipboard}>
+                {copiedMatrix ? (
+                  <>
+                    <Check className="size-4 text-emerald-600" aria-hidden /> Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="size-4" aria-hidden /> Copy Matrix
+                  </>
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={exportingDocx}
+                onClick={downloadDocx}
+              >
+                <FileText className="size-4" aria-hidden />
+                {exportingDocx ? "Exporting…" : "Export Word (.docx)"}
+              </Button>
               <Button type="button" variant="secondary" size="sm" onClick={downloadCsv}>
-                <Download className="size-4" aria-hidden /> Export CSV
+                <FileSpreadsheet className="size-4" aria-hidden /> Export CSV
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={sendingToWrite}
+                onClick={sendSynthesisToWritingStudio}
+              >
+                <PenTool className="size-4" aria-hidden />
+                {sendingToWrite ? "Adding…" : "Add to Writing Studio"}
               </Button>
               <Button
                 type="button"
@@ -197,6 +380,34 @@ export default function LiteraturePage() {
           )}
         </div>
       </div>
+
+      {sentToWriteNotice && (
+        <Alert tone="info">
+          Added matrix &amp; synthesis to your manuscript!{" "}
+          <Link href={`/app/p/${projectId}/write`} className="font-semibold underline">
+            Open Writing Studio →
+          </Link>
+        </Alert>
+      )}
+
+      {matrices.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {matrices.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => openMatrix(m.id)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                activeMatrix?.id === m.id
+                  ? "bg-brand-600 text-white"
+                  : "border border-stone-200 bg-white text-stone-700 hover:bg-stone-50"
+              }`}
+            >
+              {m.name} ({m.entry_count})
+            </button>
+          ))}
+        </div>
+      )}
 
       {error && <Alert tone="error">{error}</Alert>}
 

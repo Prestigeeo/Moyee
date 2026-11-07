@@ -11,6 +11,7 @@ from app.modules.writing import service
 from app.modules.writing.schemas import (
     ResearchDocumentOut,
     ResearchDocumentUpdate,
+    WritingAppendRequest,
     WritingAssistOut,
     WritingAssistRequest,
 )
@@ -50,6 +51,17 @@ def assist_selection(
 ):
     project = get_owned_project(db, user.id, project_id)
     return service.assist_writing_selection(db, project, data)
+
+
+@router.post("/append", response_model=ResearchDocumentOut)
+def append_to_writing_studio(
+    project_id: uuid.UUID,
+    data: WritingAppendRequest,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(db, user.id, project_id)
+    return service.append_to_document(db, project, data)
 
 
 @router.get("/{document_id}/docx")

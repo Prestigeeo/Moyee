@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Check, Download, Plus, Quote, Save, Sparkles, Trash2, X } from "lucide-react";
+import { Check, Copy, Download, Plus, Quote, Save, Sparkles, Trash2, X } from "lucide-react";
 import { Alert, Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import {
   ApiError,
@@ -32,6 +32,7 @@ export default function WritePage() {
   const [assistResult, setAssistResult] = useState<WritingAssistResult | null>(null);
   const [assisting, setAssisting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [copiedDoc, setCopiedDoc] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -183,6 +184,20 @@ export default function WritePage() {
     }
   }
 
+  async function copyFullManuscript() {
+    if (!doc) return;
+    const secBlocks = sections
+      .map((s) => `## ${s.title}\n\n${s.content.trim() || "(Empty section)"}`)
+      .join("\n\n");
+    const bibBlock =
+      doc.bibliography.length > 0
+        ? `\n\n## References\n\n${doc.bibliography.map((r, i) => `${i + 1}. ${r}`).join("\n")}`
+        : "";
+    await navigator.clipboard.writeText(`# ${doc.title}\n\n${secBlocks}${bibBlock}`);
+    setCopiedDoc(true);
+    setTimeout(() => setCopiedDoc(false), 2500);
+  }
+
   if (!doc) {
     return <p className="text-sm text-stone-500">{error ?? "Opening Writing Studio…"}</p>;
   }
@@ -207,6 +222,22 @@ export default function WritePage() {
         <div className="flex items-center gap-2">
           <Badge>{totalWords.toLocaleString()} words</Badge>
           {savedNotice && <Badge className="bg-emerald-100 text-emerald-800">{savedNotice}</Badge>}
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={copyFullManuscript}
+          >
+            {copiedDoc ? (
+              <>
+                <Check className="size-4 text-emerald-600" aria-hidden /> Copied!
+              </>
+            ) : (
+              <>
+                <Copy className="size-4" aria-hidden /> Copy Manuscript
+              </>
+            )}
+          </Button>
           <Button
             type="button"
             variant="secondary"

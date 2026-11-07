@@ -26,6 +26,7 @@ from app.modules.writing.schemas import (
     ResearchDocumentCreate,
     ResearchDocumentOut,
     ResearchDocumentUpdate,
+    WritingAppendRequest,
     WritingAssistOut,
     WritingAssistRequest,
 )
@@ -168,6 +169,68 @@ def update_document(
         doc.sections = [s.model_dump() for s in data.sections]
     if data.cited_source_ids is not None:
         doc.cited_source_ids = [str(sid) for sid in dict.fromkeys(data.cited_source_ids)]
+    db.commit()
+    db.refresh(doc)
+    return _to_doc_out(db, project, doc)
+
+
+def append_to_document(
+    db: Session, project: Project, req: WritingAppendRequest
+) -> ResearchDocumentOut:
+    """Append an Assistant response or Literature Synthesis into a Writing Studio section."""
+    get_or_create_primary_document(db, project)
+    doc = db.scalar(
+        select(ResearchDocument)
+        .where(
+            ResearchDocument.project_id == project.id,
+            ResearchDocument.owner_id == project.owner_id,
+        )
+        .order_by(ResearchDocument.created_at.asc())
+    )
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Research document not found"
+        )
+
+    sections = [dict(s) for s in (doc.sections or _default_sections(project.template))]
+    block = req.content.strip()
+    if req.heading and req.heading.strip():
+        block = f"### {req.heading.strip()}\n\n{block}"
+
+    if req.new_section_title and req.new_section_title.strip():
+        new_id = f"sec-{len(sections) + 1}-{uuid.uuid4().hex[:6]}"
+        sections.append(
+            {
+                "id": new_id,
+                "title": req.new_section_title.strip(),
+                "content": block,
+            }
+        )
+    else:
+        target_idx = 0
+        if req.section_id:
+            for idx, sec in enumerate(sections):
+                if sec.get("id") == req.section_id:
+                    target_idx = idx
+                    break
+        else:
+            # Prefer Literature Review / Related Work section if available
+            for idx, sec in enumerate(sections):
+                t_low = (sec.get("title") or "").lower()
+                if "literature" in t_low or "related work" in t_low or "findings" in t_low:
+                    target_idx = idx
+                    break
+        existing = (sections[target_idx].get("content") or "").rstrip()
+        sections[target_idx]["content"] = f"{existing}\n\n{block}".strip() if existing else block
+
+    existing_cited = [str(sid) for sid in (doc.cited_source_ids or [])]
+    for sid in req.cited_source_ids:
+        sid_str = str(sid)
+        if sid_str not in existing_cited:
+            existing_cited.append(sid_str)
+
+    doc.sections = sections
+    doc.cited_source_ids = existing_cited
     db.commit()
     db.refresh(doc)
     return _to_doc_out(db, project, doc)

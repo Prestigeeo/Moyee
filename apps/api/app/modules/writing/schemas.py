@@ -47,3 +47,11 @@ class WritingAssistOut(BaseModel):
     original: str
     suggestion: str
     note: str
+
+
+class WritingAppendRequest(BaseModel):
+    section_id: str | None = Field(default=None, max_length=64)
+    new_section_title: str | None = Field(default=None, max_length=255)
+    heading: str | None = Field(default=None, max_length=255)
+    content: str = Field(min_length=1, max_length=50_000)
+    cited_source_ids: list[uuid.UUID] = Field(default_factory=list)

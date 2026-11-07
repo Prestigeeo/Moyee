@@ -14,6 +14,7 @@ import re
 import uuid
 from collections import Counter
 
+from docx import Document as DocxDocument
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -669,4 +670,66 @@ def export_matrix_csv(db: Session, project: Project, matrix: LiteratureMatrix) -
                 ],
             ]
         )
+    return buf.getvalue()
+
+
+def export_matrix_docx(db: Session, project: Project, matrix: LiteratureMatrix) -> bytes:
+    """Export the Literature Matrix and Cross-Study Synthesis as a formatted Word (.docx) file."""
+    detail = _to_matrix_detail(db, project, matrix)
+    word_doc = DocxDocument()
+
+    word_doc.add_heading(detail.name, level=0)
+    subtitle = word_doc.add_paragraph(f"Project: {project.name} — {project.topic}")
+    subtitle.style = "Subtitle"
+
+    columns = [
+        ("study", "Study"),
+        ("aim", "Research Aim"),
+        ("methodology", "Methodology"),
+        ("sample", "Population / Sample"),
+        ("data_collection", "Data Collection"),
+        ("analysis", "Analysis Method"),
+        ("findings", "Key Findings"),
+        ("limitations", "Limitations"),
+        ("relevance", "Relevance"),
+    ]
+
+    word_doc.add_heading("Comparative Literature Matrix", level=1)
+    table = word_doc.add_table(rows=1, cols=len(columns))
+    table.style = "Table Grid"
+    hdr_cells = table.rows[0].cells
+    for idx, (_, col_label) in enumerate(columns):
+        hdr_cells[idx].text = col_label
+
+    for row in detail.entries:
+        row_cells = table.add_row().cells
+        row_cells[0].text = f"{row.author_year}\n{row.title}"
+        for col_idx, (col_key, _) in enumerate(columns[1:], start=1):
+            cell = row.cells.get(col_key)
+            if not cell:
+                row_cells[col_idx].text = "Not reported"
+            else:
+                page_suffix = f" [p. {cell.page_number}]" if cell.page_number is not None else ""
+                row_cells[col_idx].text = f"{cell.value}{page_suffix}"
+
+    notes = detail.synthesis_notes
+    word_doc.add_heading("Cross-Study Synthesis", level=1)
+
+    if notes.themes:
+        word_doc.add_heading("Recurring Themes & Findings", level=2)
+        for t in notes.themes:
+            srcs_str = f" ({', '.join(t.sources)})" if t.sources else ""
+            word_doc.add_paragraph(f"{t.theme}{srcs_str}: {t.summary}", style="List Bullet")
+
+    if notes.methodological_comparison:
+        word_doc.add_heading("Methodological Comparison", level=2)
+        word_doc.add_paragraph(notes.methodological_comparison)
+
+    if notes.potential_gaps:
+        word_doc.add_heading("Potential Research Gaps (Verify Against Literature)", level=2)
+        for gap in notes.potential_gaps:
+            word_doc.add_paragraph(gap, style="List Bullet")
+
+    buf = io.BytesIO()
+    word_doc.save(buf)
     return buf.getvalue()
