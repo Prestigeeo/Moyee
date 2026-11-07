@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { MailCheck } from "lucide-react";
 import { Alert, Button, Card, Input, Label } from "@/components/ui";
-import { SITE_URL } from "@/lib/env";
+import { getSiteUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/client";
 
 export default function SignUpPage() {
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -23,17 +25,22 @@ export default function SignUpPage() {
       return;
     }
     setLoading(true);
-    const { error } = await createClient().auth.signUp({
+    const { data, error } = await createClient().auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: `${SITE_URL}/auth/callback?next=/app`,
+        emailRedirectTo: `${getSiteUrl()}/auth/callback?next=/app`,
         data: { full_name: String(form.get("name") || "") },
       },
     });
     setLoading(false);
     if (error) {
       setError(error.message);
+      return;
+    }
+    if (data.session) {
+      router.push("/app");
+      router.refresh();
       return;
     }
     setSentTo(email);

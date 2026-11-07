@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Alert, Button, Card, Input, Label } from "@/components/ui";
-import { SITE_URL } from "@/lib/env";
+import { getSiteUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/client";
 
 export default function ForgotPasswordPage() {
@@ -17,7 +17,7 @@ export default function ForgotPasswordPage() {
     setError(null);
     const email = String(new FormData(e.currentTarget).get("email"));
     const { error } = await createClient().auth.resetPasswordForEmail(email, {
-      redirectTo: `${SITE_URL}/auth/callback?next=/reset-password`,
+      redirectTo: `${getSiteUrl()}/auth/callback?next=/reset-password`,
     });
     setLoading(false);
     // Don't reveal whether an account exists; only surface rate-limit style errors.
