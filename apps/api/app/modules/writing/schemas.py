@@ -55,3 +55,26 @@ class WritingAppendRequest(BaseModel):
     heading: str | None = Field(default=None, max_length=255)
     content: str = Field(min_length=1, max_length=50_000)
     cited_source_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class ChapterSubsectionGuide(BaseModel):
+    heading: str
+    guidance: str
+    starter_sentence: str
+
+
+class ChapterGuideRequest(BaseModel):
+    section_title: str = Field(min_length=1, max_length=255)
+    custom_question: str | None = Field(default=None, max_length=1000)
+    use_ai: bool = Field(default=True)
+
+
+class ChapterGuideOut(BaseModel):
+    section_title: str
+    chapter_goal: str
+    subsections: list[ChapterSubsectionGuide]
+    common_mistakes: list[str]
+    tailored_draft: str
+    cited_source_ids: list[uuid.UUID]
+    provider: str
+    model: str

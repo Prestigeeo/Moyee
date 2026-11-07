@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { AlertTriangle, Copy, Download, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, Pencil, Plus, Trash2 } from "lucide-react";
 import { Alert, Badge, Button, Card, Input, Label, Select } from "@/components/ui";
 import { CITATION_STYLES } from "@/config/templates";
 import type { CitationStyle, ProjectSource } from "@/lib/api";
@@ -22,6 +22,7 @@ export default function ReferencesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<ProjectSource | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -137,6 +138,31 @@ export default function ReferencesPage() {
     }
   }
 
+  async function downloadRis() {
+    try {
+      const ris = await browserApi<string>(`/projects/${projectId}/sources/ris`);
+      const blob = new Blob([ris], {
+        type: "application/x-research-info-systems;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `moyee-references-${projectId}.ris`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Could not export RIS.");
+    }
+  }
+
+  async function copyAllReferences() {
+    if (sources.length === 0) return;
+    const text = sources.map((s) => s.formatted_reference).join("\n\n");
+    await navigator.clipboard.writeText(text);
+    setCopiedAll(true);
+    setTimeout(() => setCopiedAll(false), 2200);
+  }
+
   function copyCitation(id: string, text: string) {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -170,6 +196,32 @@ export default function ReferencesPage() {
           </Select>
           <Button type="button" variant="secondary" size="md" onClick={() => setShowAdd(!showAdd)}>
             <Plus className="size-4" aria-hidden /> Add manually
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="md"
+            disabled={sources.length === 0}
+            onClick={copyAllReferences}
+          >
+            {copiedAll ? (
+              <>
+                <Check className="size-4 text-emerald-600" aria-hidden /> Copied All!
+              </>
+            ) : (
+              <>
+                <Copy className="size-4" aria-hidden /> Copy All
+              </>
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="md"
+            disabled={sources.length === 0}
+            onClick={downloadRis}
+          >
+            <Download className="size-4" aria-hidden /> Export RIS
           </Button>
           <Button
             type="button"

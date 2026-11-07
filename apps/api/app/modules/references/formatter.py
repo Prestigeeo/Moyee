@@ -176,3 +176,36 @@ def to_bibtex(sources: list[ProjectSource]) -> str:
         )
         entries.append(f"@{entry_type}{{{key},\n{body}\n}}")
     return "\n\n".join(entries) + ("\n" if entries else "")
+
+
+def to_ris(sources: list[ProjectSource]) -> str:
+    """Export project sources in RIS format for Zotero, Mendeley, and EndNote."""
+    records: list[str] = []
+    for src in sources:
+        ty = "BOOK" if src.publication_type == "book" else "JOUR"
+        lines = [f"TY  - {ty}", f"TI  - {src.title}"]
+        for a in src.authors or []:
+            fam, ini = _family_and_initials(a)
+            given = (a.get("given") or ini).strip()
+            lines.append(f"AU  - {fam}, {given}".rstrip(", "))
+        if src.publication_year:
+            lines.append(f"PY  - {src.publication_year}")
+        if src.venue:
+            lines.append(f"JO  - {src.venue}")
+        if src.publisher:
+            lines.append(f"PB  - {src.publisher}")
+        if src.volume:
+            lines.append(f"VL  - {src.volume}")
+        if src.issue:
+            lines.append(f"IS  - {src.issue}")
+        if src.pages:
+            lines.append(f"SP  - {src.pages}")
+        if src.doi:
+            lines.append(f"DO  - {src.doi}")
+        if src.source_url:
+            lines.append(f"UR  - {src.source_url}")
+        if src.abstract:
+            lines.append(f"AB  - {src.abstract[:1000]}")
+        lines.append("ER  - ")
+        records.append("\n".join(lines))
+    return "\n\n".join(records) + ("\n" if records else "")

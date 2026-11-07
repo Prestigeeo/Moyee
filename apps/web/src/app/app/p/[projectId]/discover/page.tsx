@@ -20,16 +20,20 @@ export default function DiscoverPage() {
   const searchParams = useSearchParams();
   const initialQ = searchParams.get("q") ?? "";
   const [query, setQuery] = useState(initialQ);
+  const [provider, setProvider] = useState("all");
   const [yearFrom, setYearFrom] = useState("");
   const [yearTo, setYearTo] = useState("");
   const [openAccessOnly, setOpenAccessOnly] = useState(false);
   const [pubType, setPubType] = useState("");
+  const [perPage, setPerPage] = useState(25);
+  const [page, setPage] = useState(1);
   const [results, setResults] = useState<DiscoveredWork[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [savedMap, setSavedMap] = useState<Record<string, ProjectSource>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [savingId, setSavingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -67,16 +71,27 @@ export default function DiscoverPage() {
     return savedMap[`title:${w.title.toLowerCase()}`] ?? null;
   }
 
+  function buildSearchParams(targetPage: number) {
+    const qs = new URLSearchParams({
+      q: query.trim(),
+      provider,
+      page: String(targetPage),
+      per_page: String(perPage),
+    });
+    if (yearFrom) qs.set("year_from", yearFrom);
+    if (yearTo) qs.set("year_to", yearTo);
+    if (openAccessOnly) qs.set("open_access_only", "true");
+    if (pubType) qs.set("publication_type", pubType);
+    return qs;
+  }
+
   async function onSearch(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (query.trim().length < 2) return;
     setLoading(true);
     setError(null);
-    const qs = new URLSearchParams({ q: query.trim() });
-    if (yearFrom) qs.set("year_from", yearFrom);
-    if (yearTo) qs.set("year_to", yearTo);
-    if (openAccessOnly) qs.set("open_access_only", "true");
-    if (pubType) qs.set("publication_type", pubType);
+    setPage(1);
+    const qs = buildSearchParams(1);
 
     try {
       const data = await browserApi<DiscoverySearchResponse>(`/discovery/search?${qs.toString()}`);
@@ -90,6 +105,32 @@ export default function DiscoverPage() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadMorePapers() {
+    if (loadingMore || query.trim().length < 2) return;
+    const nextPage = page + 1;
+    setLoadingMore(true);
+    setError(null);
+    const qs = buildSearchParams(nextPage);
+
+    try {
+      const data = await browserApi<DiscoverySearchResponse>(`/discovery/search?${qs.toString()}`);
+      setResults((prev) => {
+        const seen = new Set(prev.map((w) => w.external_id));
+        const nextItems = data.results.filter((w) => !seen.has(w.external_id));
+        return [...prev, ...nextItems];
+      });
+      setPage(nextPage);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.isQuota ? quotaMessage(err) : err.message);
+      } else {
+        setError("Could not load more papers.");
+      }
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -153,7 +194,21 @@ export default function DiscoverPage() {
             </Button>
           </div>
 
-          <div className="grid gap-3 pt-1 sm:grid-cols-4">
+          <div className="grid gap-3 pt-1 sm:grid-cols-6">
+            <div className="sm:col-span-2">
+              <Label htmlFor="provider" className="text-xs">Database source</Label>
+              <Select
+                id="provider"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+              >
+                <option value="all">All Databases (OpenAlex + S2 + Crossref)</option>
+                <option value="openalex">OpenAlex (250M+ global works)</option>
+                <option value="semantic_scholar">Semantic Scholar (214M+ papers)</option>
+                <option value="crossref">Crossref (150M+ publisher DOIs)</option>
+                <option value="arxiv">arXiv (Full-text preprints)</option>
+              </Select>
+            </div>
             <div>
               <Label htmlFor="yearFrom" className="text-xs">Year from</Label>
               <Input
@@ -188,17 +243,29 @@ export default function DiscoverPage() {
                 <option value="dissertation">Dissertation</option>
               </Select>
             </div>
-            <div className="flex items-end pb-2">
-              <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-stone-700">
-                <input
-                  type="checkbox"
-                  checked={openAccessOnly}
-                  onChange={(e) => setOpenAccessOnly(e.target.checked)}
-                  className="size-4 rounded border-stone-300 text-brand-600"
-                />
-                Open access only
-              </label>
+            <div>
+              <Label htmlFor="perPage" className="text-xs">Results per page</Label>
+              <Select
+                id="perPage"
+                value={String(perPage)}
+                onChange={(e) => setPerPage(Number(e.target.value))}
+              >
+                <option value="15">15 per page</option>
+                <option value="25">25 per page</option>
+                <option value="50">50 per page</option>
+              </Select>
             </div>
+          </div>
+          <div className="flex items-center justify-between pt-1">
+            <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-stone-700">
+              <input
+                type="checkbox"
+                checked={openAccessOnly}
+                onChange={(e) => setOpenAccessOnly(e.target.checked)}
+                className="size-4 rounded border-stone-300 text-brand-600"
+              />
+              Open-access full-text only (uncheck to include subscription/paywalled papers too)
+            </label>
           </div>
         </form>
       </Card>
@@ -207,7 +274,7 @@ export default function DiscoverPage() {
 
       {total !== null && (
         <p className="text-xs text-stone-500">
-          Showing {results.length} of {total.toLocaleString()} matching works (source: OpenAlex)
+          Showing {results.length} of {total.toLocaleString()} matching works
         </p>
       )}
 
@@ -234,7 +301,10 @@ export default function DiscoverPage() {
                           : "bg-stone-100 text-stone-600"
                       }
                     >
-                      {work.is_open_access ? "Open access" : "Metadata only"}
+                      {work.is_open_access ? "Open access" : "Subscription / Metadata"}
+                    </Badge>
+                    <Badge className="bg-stone-100 text-stone-700 uppercase">
+                      {work.provider.replace("_", " ")}
                     </Badge>
                     {work.publication_year && <Badge>{work.publication_year}</Badge>}
                     {work.citation_count != null && (
@@ -339,6 +409,21 @@ export default function DiscoverPage() {
           );
         })}
       </div>
+
+      {results.length > 0 && (total === null || results.length < total) && (
+        <div className="flex justify-center pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={loadingMore}
+            onClick={loadMorePapers}
+          >
+            {loadingMore
+              ? "Loading more papers…"
+              : `Load more papers (${results.length} loaded so far)`}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

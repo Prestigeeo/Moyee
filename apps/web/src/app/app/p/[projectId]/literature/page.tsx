@@ -51,6 +51,7 @@ export default function LiteraturePage() {
     value: string;
   } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
   const [copiedMatrix, setCopiedMatrix] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
   const [sendingToWrite, setSendingToWrite] = useState(false);
@@ -91,6 +92,15 @@ export default function LiteraturePage() {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleCellExpand(cellId: string) {
+    setExpandedCells((prev) => {
+      const next = new Set(prev);
+      if (next.has(cellId)) next.delete(cellId);
+      else next.add(cellId);
       return next;
     });
   }
@@ -464,9 +474,15 @@ export default function LiteraturePage() {
                 </Button>
                 <Button type="submit" disabled={creating || selectedSourceIds.size === 0}>
                   <Layers className="size-4" aria-hidden />
-                  {creating ? "Extracting matrix…" : "Extract & compare"}
+                  {creating ? "Extracting matrix with AI…" : "Extract & compare"}
                 </Button>
               </div>
+              {creating && (
+                <div className="rounded-lg border border-brand-200 bg-brand-50/70 p-3 text-xs text-brand-800">
+                  Analysing {selectedSourceIds.size} study(ies): extracting research aims,
+                  methodologies, samples, findings, limitations, and synthesising cross-study themes…
+                </div>
+              )}
             </form>
           )}
         </Card>
@@ -479,7 +495,9 @@ export default function LiteraturePage() {
             <table className="w-full min-w-[1100px] border-collapse text-left text-xs">
               <thead>
                 <tr className="border-b border-stone-200 bg-stone-50 text-stone-600">
-                  <th className="sticky left-0 bg-stone-50 p-3 font-semibold">Study</th>
+                  <th className="sticky left-0 z-10 bg-stone-50 p-3 font-semibold shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)]">
+                    Study
+                  </th>
                   {MATRIX_COLUMNS.map((col) => (
                     <th key={col.key} className="p-3 font-semibold">
                       {col.label}
@@ -490,8 +508,8 @@ export default function LiteraturePage() {
               <tbody className="divide-y divide-stone-100 align-top">
                 {activeMatrix.entries.map((entry) => (
                   <tr key={entry.id} className="hover:bg-stone-50/60">
-                    <td className="sticky left-0 w-48 bg-white p-3 font-medium text-ink">
-                      <p className="text-brand-700">{entry.author_year}</p>
+                    <td className="sticky left-0 z-10 w-52 bg-white p-3 font-medium text-ink shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)]">
+                      <p className="font-semibold text-brand-700">{entry.author_year}</p>
                       <p className="mt-1 line-clamp-3 text-stone-600">{entry.title}</p>
                     </td>
                     {MATRIX_COLUMNS.map((col) => {
@@ -503,9 +521,12 @@ export default function LiteraturePage() {
                       };
                       const isEditing =
                         editingCell?.entryId === entry.id && editingCell.field === col.key;
+                      const cellId = `${entry.id}:${col.key}`;
+                      const isExpanded = expandedCells.has(cellId);
+                      const isLong = cell.value.length > 165;
 
                       return (
-                        <td key={col.key} className="w-56 p-3">
+                        <td key={col.key} className="w-60 p-3">
                           {isEditing ? (
                             <div className="space-y-2">
                               <Textarea
@@ -536,11 +557,20 @@ export default function LiteraturePage() {
                                 className={
                                   cell.value === "Not reported"
                                     ? "italic text-stone-400"
-                                    : "leading-relaxed text-ink"
+                                    : `leading-relaxed text-ink ${!isExpanded && isLong ? "line-clamp-4" : ""}`
                                 }
                               >
                                 {cell.value}
                               </p>
+                              {isLong && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleCellExpand(cellId)}
+                                  className="text-[11px] font-medium text-brand-600 hover:underline"
+                                >
+                                  {isExpanded ? "Show less" : "Read more"}
+                                </button>
+                              )}
                               <div className="flex items-center gap-1.5">
                                 {cell.page_number != null && (
                                   <Link

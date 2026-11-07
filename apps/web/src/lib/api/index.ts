@@ -297,6 +297,23 @@ export interface WritingAssistResult {
   note: string;
 }
 
+export interface ChapterSubsectionGuide {
+  heading: string;
+  guidance: string;
+  starter_sentence: string;
+}
+
+export interface ChapterGuide {
+  section_title: string;
+  chapter_goal: string;
+  subsections: ChapterSubsectionGuide[];
+  common_mistakes: string[];
+  tailored_draft: string;
+  cited_source_ids: string[];
+  provider: string;
+  model: string;
+}
+
 export interface CheckoutInit {
   provider: string;
   reference: string;
@@ -337,6 +354,7 @@ export async function apiFetch<T>(path: string, token: string | null, init: Requ
   const contentType = res.headers.get("content-type") ?? "";
   if (
     contentType.includes("x-bibtex") ||
+    contentType.includes("x-research-info-systems") ||
     contentType.startsWith("text/plain") ||
     contentType.startsWith("text/csv")
   ) {

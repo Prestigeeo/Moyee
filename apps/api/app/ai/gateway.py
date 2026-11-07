@@ -842,3 +842,507 @@ def generate_llm_matrix_synthesis(
         "methodological_comparison": method_comp,
         "potential_gaps": clean_gaps,
     }
+
+
+def _fallback_chapter_guide(
+    *,
+    section_title: str,
+    project_name: str,
+    project_topic: str,
+    discipline: str,
+    research_level: str,
+    objectives: list[str],
+    research_questions: list[str],
+    sources_summary: list[dict],
+) -> dict:
+    """Deterministic project-tailored chapter guide & starter scaffold for beginners."""
+    sec_low = section_title.lower()
+    topic = project_topic.strip() or project_name.strip() or "your research topic"
+    rq1 = (
+        research_questions[0]
+        if research_questions
+        else f"What are the primary determinants and empirical patterns of {topic}?"
+    )
+    obj1 = objectives[0] if objectives else f"To examine the key factors associated with {topic}."
+    cite_examples = [s["inline_citation"] for s in sources_summary[:3] if s.get("inline_citation")]
+    cite_str = ", ".join(cite_examples) if cite_examples else "(Author, Year)"
+
+    if "abstract" in sec_low or "executive summary" in sec_low:
+        goal = (
+            f"Summarise your entire {research_level} study on '{topic}' in 150–250 words: "
+            "state the background problem, your research aim, methodology, key findings, "
+            "and main conclusion."
+        )
+        subsections = [
+            {
+                "heading": "Background & Problem",
+                "guidance": (
+                    f"Write 1–2 sentences explaining why '{topic}' matters in {discipline}."
+                ),
+                "starter_sentence": (
+                    f"Growing scholarly attention in {discipline} has focused on {topic}, yet "
+                    "empirical evidence within specific institutional contexts remains limited."
+                ),
+            },
+            {
+                "heading": "Aim & Methodology",
+                "guidance": (
+                    "State your primary objective, research design, sample, and analysis method."
+                ),
+                "starter_sentence": (
+                    f"Accordingly, this study aimed {obj1.lower().rstrip('.')} using a structured "
+                    "empirical research design."
+                ),
+            },
+            {
+                "heading": "Key Findings & Implications",
+                "guidance": "Summarise your main empirical results and practical recommendation.",
+                "starter_sentence": (
+                    f"The findings indicate significant patterns regarding {topic}, offering "
+                    "actionable implications for policy and practice."
+                ),
+            },
+        ]
+        mistakes = [
+            "Including citations or long literature reviews inside the Abstract.",
+            "Forgetting to mention the sample size and research methodology.",
+            "Writing vague promises ('results will be discussed') instead of actual findings.",
+        ]
+    elif "literature" in sec_low or "related work" in sec_low or "chapter two" in sec_low:
+        goal = (
+            f"Synthesise existing scholarly studies on '{topic}', group them into thematic "
+            "debates rather than listing papers one-by-one, and show the exact research gap "
+            "your study fills."
+        )
+        src_lines = []
+        for s in sources_summary[:4]:
+            finding_hint = (s.get("abstract") or "")[:160].strip()
+            if finding_hint:
+                src_lines.append(
+                    f"Recent work by {s['inline_citation']} on \"{s['title']}\" highlights that "
+                    f"{finding_hint.rstrip('.')}."
+                )
+            else:
+                src_lines.append(
+                    f"Empirical research by {s['inline_citation']} examines \"{s['title']}\" "
+                    f"in relation to {topic}."
+                )
+        lit_body = (
+            "\n\n".join(src_lines)
+            if src_lines
+            else (
+                f"Prior studies in {discipline} have examined multiple dimensions of {topic} "
+                f"{cite_str}, revealing both promising outcomes and methodological constraints."
+            )
+        )
+        subsections = [
+            {
+                "heading": "2.1 Conceptual Overview",
+                "guidance": f"Define the core concepts and variables related to '{topic}'.",
+                "starter_sentence": (
+                    f"In the context of {discipline}, {topic} is conceptualised through its "
+                    f"core operational dimensions and measurable outcomes {cite_str}."
+                ),
+            },
+            {
+                "heading": "2.2 Theoretical Framework",
+                "guidance": (
+                    "Introduce the guiding theory or model that explains how your variables relate."
+                ),
+                "starter_sentence": (
+                    "This study is anchored in a theoretical framework that explains the "
+                    f"mechanisms linking contextual factors to outcomes in {topic}."
+                ),
+            },
+            {
+                "heading": "2.3 Empirical Review of Related Studies",
+                "guidance": (
+                    "Compare what previous researchers found, the methods/samples they used, "
+                    "and where their findings agree or disagree."
+                ),
+                "starter_sentence": lit_body.split("\n\n")[0],
+            },
+            {
+                "heading": "2.4 Summary of Literature & Research Gap",
+                "guidance": (
+                    "Explain what is missing in the reviewed studies (e.g., context, sample, "
+                    "or methodology) that justifies your research questions."
+                ),
+                "starter_sentence": (
+                    f"While existing studies {cite_str} provide valuable insights into {topic}, "
+                    f"few have directly addressed the question: '{rq1}'"
+                ),
+            },
+        ]
+        mistakes = [
+            (
+                "Writing a 'laundry list' where every paragraph starts with an author's name "
+                "instead of grouping by theme."
+            ),
+            "Summarizing papers without comparing their methodologies, samples, or limitations.",
+            "Ending the chapter without clearly stating the research gap your study addresses.",
+        ]
+    elif "method" in sec_low or "chapter three" in sec_low:
+        goal = (
+            f"Explain the exact step-by-step blueprint used to investigate '{topic}' so another "
+            "researcher could replicate your study and verify its validity."
+        )
+        subsections = [
+            {
+                "heading": "3.1 Research Design",
+                "guidance": (
+                    "State whether your study is quantitative, qualitative, or mixed-methods, "
+                    "and justify why that design fits your research questions."
+                ),
+                "starter_sentence": (
+                    f"This study adopts a structured empirical research design to investigate "
+                    f"{topic} and answer the primary research question: '{rq1}'"
+                ),
+            },
+            {
+                "heading": "3.2 Population & Sampling Technique",
+                "guidance": "Define your target population, sample size, and sampling method.",
+                "starter_sentence": (
+                    f"The target population comprises participants directly engaged with {topic}, "
+                    "selected using a clearly defined sampling frame."
+                ),
+            },
+            {
+                "heading": "3.3 Data Collection Instrument & Procedure",
+                "guidance": (
+                    "Describe the questionnaire, interview guide, or dataset used and how "
+                    "validity and reliability were ensured."
+                ),
+                "starter_sentence": (
+                    "Primary data were collected using a validated instrument aligned with the "
+                    f"study's research objectives ({obj1.rstrip('.')})."
+                ),
+            },
+            {
+                "heading": "3.4 Method of Data Analysis & Ethical Considerations",
+                "guidance": (
+                    "Specify the statistical or thematic analysis techniques and ethical "
+                    "safeguards."
+                ),
+                "starter_sentence": (
+                    "Collected data were cleaned and analysed systematically to address each "
+                    "research question while adhering strictly to institutional ethical standards."
+                ),
+            },
+        ]
+        mistakes = [
+            (
+                "Defining textbook terms ('what is quantitative research') instead of explaining "
+                "what YOU did."
+            ),
+            "Failing to justify your sample size or how participants were selected.",
+            "Not matching your data analysis method to each specific research question.",
+        ]
+    elif (
+        "result" in sec_low
+        or "finding" in sec_low
+        or "discussion" in sec_low
+        or "chapter four" in sec_low
+    ):
+        goal = (
+            f"Present your empirical findings on '{topic}' organized by research question, "
+            "and interpret how those findings compare with the studies in your Literature Review."
+        )
+        subsections = [
+            {
+                "heading": "4.1 Demographic / Baseline Characteristics",
+                "guidance": (
+                    "Briefly describe the response rate and characteristics of your sample."
+                ),
+                "starter_sentence": (
+                    "This section presents the descriptive profile and baseline characteristics "
+                    f"of the sample analysed for {topic}."
+                ),
+            },
+            {
+                "heading": "4.2 Presentation of Findings by Research Question",
+                "guidance": (
+                    f"Present the evidence answering '{rq1}' clearly before interpreting it."
+                ),
+                "starter_sentence": (
+                    f"With respect to the first research question ('{rq1}'), the empirical "
+                    "analysis revealed distinct patterns across the observed variables."
+                ),
+            },
+            {
+                "heading": "4.3 Discussion of Findings",
+                "guidance": (
+                    f"Compare your findings with prior studies {cite_str}—do they align "
+                    "or contrast?"
+                ),
+                "starter_sentence": (
+                    f"These findings align with and extend prior empirical evidence {cite_str} "
+                    f"concerning {topic}."
+                ),
+            },
+        ]
+        mistakes = [
+            (
+                "Repeating every single number from a table in prose instead of highlighting "
+                "the main trend."
+            ),
+            "Introducing brand-new topics that were not part of your research questions.",
+            "Forgetting to connect your Discussion back to the authors cited in Chapter Two.",
+        ]
+    elif "conclusion" in sec_low or "recommend" in sec_low or "chapter five" in sec_low:
+        goal = (
+            f"Synthesise the main conclusions drawn from your study on '{topic}', acknowledge "
+            "study limitations honestly, and propose concrete recommendations."
+        )
+        subsections = [
+            {
+                "heading": "5.1 Summary of Key Findings",
+                "guidance": "Briefly recap how each research question was answered.",
+                "starter_sentence": (
+                    f"This study investigated {topic} and established empirical insights across "
+                    "each of the stated research objectives."
+                ),
+            },
+            {
+                "heading": "5.2 Conclusions & Contributions to Knowledge",
+                "guidance": "State the overarching takeaway and contribution of your work.",
+                "starter_sentence": (
+                    "Based on the empirical evidence, the study concludes that addressing the "
+                    f"core determinants of {topic} is essential for sustainable improvement."
+                ),
+            },
+            {
+                "heading": "5.3 Limitations & Recommendations for Future Research",
+                "guidance": (
+                    "Note scope/sample constraints and propose specific next steps for "
+                    "practitioners and future scholars."
+                ),
+                "starter_sentence": (
+                    "While the findings provide grounded insights, future research should expand "
+                    f"the longitudinal and comparative scope of {topic}."
+                ),
+            },
+        ]
+        mistakes = [
+            (
+                "Making sweeping policy recommendations that are not supported by your actual "
+                "findings."
+            ),
+            "Hiding study limitations instead of stating them transparently.",
+            "Copy-pasting the Abstract word-for-word as the Conclusion.",
+        ]
+    else:
+        # Introduction / Chapter One or custom section
+        rqs_block = (
+            "\n".join(f"{i + 1}. {q}" for i, q in enumerate(research_questions))
+            if research_questions
+            else f"1. {rq1}"
+        )
+        objs_block = (
+            "\n".join(f"{i + 1}. {o}" for i, o in enumerate(objectives))
+            if objectives
+            else f"1. {obj1}"
+        )
+        goal = (
+            f"Introduce your study on '{topic}', establish why the problem is urgent and worth "
+            "investigating, and clearly state your research objectives, questions, and scope."
+        )
+        subsections = [
+            {
+                "heading": "1.1 Background to the Study",
+                "guidance": (
+                    f"Move from a broad overview of {topic} in {discipline} down to the specific "
+                    f"context of your study, citing foundational literature {cite_str}."
+                ),
+                "starter_sentence": (
+                    f"In recent years, {topic} has emerged as a critical area of inquiry within "
+                    f"{discipline} {cite_str}."
+                ),
+            },
+            {
+                "heading": "1.2 Statement of the Problem",
+                "guidance": (
+                    "State the ideal situation, the current empirical gap or challenge, and the "
+                    "consequence of not addressing it."
+                ),
+                "starter_sentence": (
+                    f"Despite growing interest in {topic}, empirical understanding of its specific "
+                    "mechanisms and practical constraints remains incomplete."
+                ),
+            },
+            {
+                "heading": "1.3 Aim, Objectives & Research Questions",
+                "guidance": (
+                    "List the overarching aim alongside your specific objectives and research "
+                    "questions."
+                ),
+                "starter_sentence": (
+                    f"The overarching aim of this study is to investigate {topic}.\n\n"
+                    f"Specific Objectives:\n{objs_block}\n\n"
+                    f"Research Questions:\n{rqs_block}"
+                ),
+            },
+            {
+                "heading": "1.4 Significance & Scope of the Study",
+                "guidance": (
+                    "Explain who benefits from your findings (scholars, practitioners, "
+                    "policymakers) and define the boundaries of your study."
+                ),
+                "starter_sentence": (
+                    f"The findings of this study contribute to {discipline} by providing grounded "
+                    f"empirical evidence on {topic}."
+                ),
+            },
+        ]
+        mistakes = [
+            (
+                "Starting too broadly without connecting the background directly to your "
+                "specific topic."
+            ),
+            (
+                "Writing a Problem Statement that describes a general social issue without "
+                "identifying a researchable knowledge gap."
+            ),
+            "Listing research questions that do not match your stated research objectives.",
+        ]
+
+    draft_blocks = [
+        f"### {sub['heading']}\n\n{sub['starter_sentence']}" for sub in subsections
+    ]
+    return {
+        "chapter_goal": goal,
+        "subsections": subsections,
+        "common_mistakes": mistakes,
+        "tailored_draft": "\n\n".join(draft_blocks),
+        "provider": "extractive",
+        "model": "moyee-chapter-coach-v1",
+    }
+
+
+def generate_chapter_writing_guide(
+    *,
+    section_title: str,
+    project_name: str,
+    project_topic: str,
+    discipline: str | None,
+    research_level: str | None,
+    objectives: list[str],
+    research_questions: list[str],
+    sources_summary: list[dict],
+    matrix_themes: list[dict] | None = None,
+    custom_question: str | None = None,
+) -> dict:
+    """Generate a beginner-friendly, project-tailored chapter guide & starter draft."""
+    settings = get_settings()
+    disc_label = (discipline or "Interdisciplinary Research").strip()
+    level_label = (research_level or "postgraduate").replace("_", " ")
+
+    fallback = _fallback_chapter_guide(
+        section_title=section_title,
+        project_name=project_name,
+        project_topic=project_topic,
+        discipline=disc_label,
+        research_level=level_label,
+        objectives=objectives,
+        research_questions=research_questions,
+        sources_summary=sources_summary,
+    )
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.ollama_base_url):
+        return fallback
+
+    sources_text = (
+        "\n".join(
+            f"- {s['inline_citation']} \"{s['title']}\": {(s.get('abstract') or '')[:260]}"
+            for s in sources_summary[:8]
+        )
+        if sources_summary
+        else "No saved sources yet."
+    )
+    themes_text = (
+        "\n".join(
+            f"- {t.get('theme')}: {t.get('summary')}" for t in (matrix_themes or [])[:4]
+        )
+        if matrix_themes
+        else "No Literature Matrix themes extracted yet."
+    )
+
+    system_prompt = (
+        "You are Móyee Academic Writing Coach, designed to guide research beginners and students "
+        "step-by-step through writing a specific chapter of their manuscript.\n"
+        "Strict Rules:\n"
+        "1. Tailor every explanation, sub-heading, and starter paragraph specifically to the "
+        "user's Project Topic, Research Questions, Objectives, and Saved Project Sources.\n"
+        "2. When citing papers in 'starter_sentence' or 'tailored_draft', use ONLY the exact "
+        "inline citations provided in 'Saved Project Sources' (e.g. (Alzahrani, 2026)). "
+        "NEVER invent fake authors or years.\n"
+        "3. Respond strictly as a JSON object with these keys:\n"
+        '- "chapter_goal": string (clear, encouraging 1-2 sentence explanation of what this '
+        "chapter must accomplish for this specific project)\n"
+        '- "subsections": array of 3 to 4 objects, each with:\n'
+        '    - "heading": string (e.g. "1.1 Background to the Study" or "2.1 Empirical Review")\n'
+        '    - "guidance": string (beginner-friendly coaching on what to write here)\n'
+        '    - "starter_sentence": string (2-3 tailored academic sentences to insert directly)\n'
+        '- "common_mistakes": array of 3 short strings on beginner pitfalls in this chapter\n'
+        '- "tailored_draft": string (a structured multi-paragraph starter draft for this chapter '
+        "using ### sub-headings grounded in the project's research questions and saved sources)."
+    )
+    objs_str = "; ".join(objectives) if objectives else "Not set yet"
+    rqs_str = "; ".join(research_questions) if research_questions else "Not set yet"
+    focus_str = custom_question or "General step-by-step guidance for this chapter"
+    user_prompt = (
+        f"Chapter / Section to Write: {section_title}\n"
+        f"Project Title: {project_name}\n"
+        f"Project Topic: {project_topic}\n"
+        f"Discipline: {disc_label} ({level_label} level)\n"
+        f"Objectives: {objs_str}\n"
+        f"Research Questions: {rqs_str}\n"
+        f"Specific User Request / Focus: {focus_str}\n\n"
+        f"Saved Project Sources:\n{sources_text}\n\n"
+        f"Literature Matrix Synthesis Themes:\n{themes_text}"
+    )
+
+    for provider_name, fn, key, model in (
+        ("gemini", _call_gemini, settings.gemini_api_key, settings.gemini_model),
+        ("groq", _call_groq, settings.groq_api_key, settings.groq_model),
+    ):
+        if not key:
+            continue
+        try:
+            parsed = fn(system_prompt, user_prompt, key, model)
+            if (
+                parsed
+                and isinstance(parsed.get("chapter_goal"), str)
+                and isinstance(parsed.get("subsections"), list)
+                and len(parsed["subsections"]) >= 2
+                and isinstance(parsed.get("tailored_draft"), str)
+            ):
+                subs = []
+                for item in parsed["subsections"][:5]:
+                    if isinstance(item, dict) and item.get("heading"):
+                        subs.append(
+                            {
+                                "heading": str(item.get("heading")).strip(),
+                                "guidance": str(item.get("guidance") or "").strip(),
+                                "starter_sentence": str(item.get("starter_sentence") or "").strip(),
+                            }
+                        )
+                if subs:
+                    mistakes = [
+                        str(m).strip()
+                        for m in (parsed.get("common_mistakes") or [])
+                        if str(m).strip()
+                    ][:4]
+                    return {
+                        "chapter_goal": parsed["chapter_goal"].strip(),
+                        "subsections": subs,
+                        "common_mistakes": mistakes or fallback["common_mistakes"],
+                        "tailored_draft": parsed["tailored_draft"].strip(),
+                        "provider": provider_name,
+                        "model": model,
+                    }
+        except Exception as exc:
+            logger.warning(
+                "Chapter guide call failed on %s (%s)", provider_name, type(exc).__name__
+            )
+
+    return fallback

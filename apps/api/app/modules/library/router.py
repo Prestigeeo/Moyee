@@ -20,7 +20,7 @@ from app.modules.library.schemas import (
     SourceSummaryOut,
 )
 from app.modules.projects.service import get_owned_project
-from app.modules.references.formatter import to_bibtex
+from app.modules.references.formatter import to_bibtex, to_ris
 from app.modules.users.models import CitationStyle
 
 router = APIRouter(prefix="/projects/{project_id}/sources", tags=["sources & references"])
@@ -90,6 +90,21 @@ def export_bibtex(
         content=to_bibtex(sources),
         media_type="application/x-bibtex; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{project.id}-references.bib"'},
+    )
+
+
+@router.get("/ris", response_class=PlainTextResponse)
+def export_ris(
+    project_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(db, user.id, project_id)
+    sources = service.list_project_sources(db, project)
+    return PlainTextResponse(
+        content=to_ris(sources),
+        media_type="application/x-research-info-systems; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{project.id}-references.ris"'},
     )
 
 

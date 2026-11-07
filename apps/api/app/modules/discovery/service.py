@@ -7,6 +7,7 @@ Follows PRD §6.4:
 """
 
 import re
+import xml.etree.ElementTree as ET
 from urllib.parse import quote
 
 import httpx
@@ -16,6 +17,9 @@ from app.core.config import get_settings
 from app.modules.discovery.schemas import AuthorItem, DiscoveredWork, DiscoverySearchResponse
 
 OPENALEX_BASE = "https://api.openalex.org"
+CROSSREF_BASE = "https://api.crossref.org"
+SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
+ARXIV_BASE = "https://export.arxiv.org/api/query"
 DOI_REGEX = re.compile(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", re.IGNORECASE)
 
 
@@ -168,9 +172,234 @@ def _headers() -> dict[str, str]:
     return {"User-Agent": ua, "Accept": "application/json"}
 
 
+def _search_crossref(
+    query: str,
+    *,
+    year_from: int | None,
+    year_to: int | None,
+    per_page: int,
+    page: int,
+    client: httpx.Client,
+) -> tuple[list[DiscoveredWork], int]:
+    params: dict[str, str | int] = {
+        "query": query,
+        "rows": min(per_page, 50),
+        "offset": (page - 1) * per_page,
+    }
+    filters: list[str] = []
+    if year_from is not None:
+        filters.append(f"from-pub-date:{year_from}")
+    if year_to is not None:
+        filters.append(f"until-pub-date:{year_to}")
+    if filters:
+        params["filter"] = ",".join(filters)
+    try:
+        resp = client.get(f"{CROSSREF_BASE}/works", params=params)
+        resp.raise_for_status()
+        msg = (resp.json() or {}).get("message") or {}
+    except Exception:
+        return [], 0
+
+    out: list[DiscoveredWork] = []
+    for item in msg.get("items") or []:
+        titles = item.get("title") or []
+        title = (titles[0] if titles else "").strip()
+        doi = extract_doi(item.get("DOI") or "")
+        if not title or not doi:
+            continue
+        authors: list[AuthorItem] = []
+        for a in item.get("author") or []:
+            given = (a.get("given") or "").strip()
+            family = (a.get("family") or "").strip()
+            full = f"{given} {family}".strip() or (a.get("name") or "").strip()
+            if full:
+                authors.append(AuthorItem(name=full, given=given or None, family=family or None))
+        pub_year = None
+        for date_key in ("published-print", "published-online", "issued"):
+            parts = ((item.get(date_key) or {}).get("date-parts") or [[]])[0]
+            if parts and isinstance(parts[0], int):
+                pub_year = parts[0]
+                break
+        containers = item.get("container-title") or []
+        venue = (containers[0] if containers else "").strip() or None
+        raw_abs = item.get("abstract") or ""
+        clean_abs = re.sub(r"<[^>]+>", " ", raw_abs).strip() if raw_abs else None
+        pdf_url = None
+        for link in item.get("link") or []:
+            if isinstance(link, dict) and "pdf" in str(link.get("content-type", "")).lower():
+                pdf_url = link.get("URL")
+                break
+        out.append(
+            DiscoveredWork(
+                provider="crossref",
+                external_id=f"cr:{doi}",
+                doi=doi,
+                title=title,
+                authors=authors,
+                abstract=clean_abs,
+                publication_year=pub_year,
+                venue=venue,
+                publisher=item.get("publisher"),
+                publication_type=item.get("type") or "article",
+                volume=item.get("volume"),
+                issue=item.get("issue"),
+                pages=item.get("page"),
+                source_url=item.get("URL") or f"https://doi.org/{doi}",
+                oa_pdf_url=pdf_url,
+                is_open_access=bool(pdf_url),
+                citation_count=item.get("is-referenced-by-count"),
+                keywords=[],
+            )
+        )
+    return out, int(msg.get("total-results") or len(out))
+
+
+def _search_semantic_scholar(
+    query: str,
+    *,
+    year_from: int | None,
+    year_to: int | None,
+    open_access_only: bool,
+    per_page: int,
+    page: int,
+    client: httpx.Client,
+) -> tuple[list[DiscoveredWork], int]:
+    params: dict[str, str | int] = {
+        "query": query,
+        "limit": min(per_page, 50),
+        "offset": (page - 1) * per_page,
+        "fields": (
+            "title,authors,year,abstract,venue,externalIds,"
+            "isOpenAccess,openAccessPdf,citationCount,url"
+        ),
+    }
+    if year_from and year_to:
+        params["year"] = f"{year_from}-{year_to}"
+    elif year_from:
+        params["year"] = f"{year_from}-"
+    elif year_to:
+        params["year"] = f"-{year_to}"
+    if open_access_only:
+        params["openAccessPdf"] = ""
+
+    try:
+        resp = client.get(f"{SEMANTIC_SCHOLAR_BASE}/paper/search", params=params)
+        resp.raise_for_status()
+        body = resp.json() or {}
+    except Exception:
+        return [], 0
+
+    out: list[DiscoveredWork] = []
+    for item in body.get("data") or []:
+        title = (item.get("title") or "").strip()
+        pid = item.get("paperId") or ""
+        if not title or not pid:
+            continue
+        ext_ids = item.get("externalIds") or {}
+        doi = extract_doi(ext_ids.get("DOI") or "") if ext_ids.get("DOI") else None
+        arxiv_id = ext_ids.get("ArXiv")
+        oa_pdf = (item.get("openAccessPdf") or {}).get("url")
+        if not oa_pdf and arxiv_id:
+            oa_pdf = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        is_oa = bool(item.get("isOpenAccess")) or bool(oa_pdf)
+        authors = [
+            _split_name(a.get("name", ""))
+            for a in (item.get("authors") or [])
+            if (a.get("name") or "").strip()
+        ]
+        out.append(
+            DiscoveredWork(
+                provider="semantic_scholar",
+                external_id=f"s2:{pid}",
+                doi=doi,
+                title=title,
+                authors=authors,
+                abstract=(item.get("abstract") or "").strip() or None,
+                publication_year=item.get("year"),
+                venue=(item.get("venue") or "").strip() or None,
+                publisher=None,
+                publication_type="article",
+                volume=None,
+                issue=None,
+                pages=None,
+                source_url=item.get("url") or (f"https://doi.org/{doi}" if doi else None),
+                oa_pdf_url=oa_pdf,
+                is_open_access=is_oa,
+                citation_count=item.get("citationCount"),
+                keywords=[],
+            )
+        )
+    return out, int(body.get("total") or len(out))
+
+
+def _search_arxiv(
+    query: str,
+    *,
+    per_page: int,
+    page: int,
+    client: httpx.Client,
+) -> tuple[list[DiscoveredWork], int]:
+    params: dict[str, str | int] = {
+        "search_query": f"all:{query}",
+        "start": (page - 1) * per_page,
+        "max_results": min(per_page, 50),
+    }
+    try:
+        resp = client.get(ARXIV_BASE, params=params)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+    except Exception:
+        return [], 0
+
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    out: list[DiscoveredWork] = []
+    for entry in root.findall("atom:entry", ns):
+        raw_id = (entry.findtext("atom:id", default="", namespaces=ns) or "").strip()
+        title = re.sub(
+            r"\s+", " ", (entry.findtext("atom:title", default="", namespaces=ns) or "")
+        ).strip()
+        summary = re.sub(
+            r"\s+", " ", (entry.findtext("atom:summary", default="", namespaces=ns) or "")
+        ).strip()
+        published = (entry.findtext("atom:published", default="", namespaces=ns) or "")[:4]
+        if not raw_id or not title:
+            continue
+        arxiv_id = raw_id.rsplit("/abs/", 1)[-1]
+        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        authors = [
+            _split_name(a.findtext("atom:name", default="", namespaces=ns))
+            for a in entry.findall("atom:author", ns)
+            if (a.findtext("atom:name", default="", namespaces=ns) or "").strip()
+        ]
+        out.append(
+            DiscoveredWork(
+                provider="arxiv",
+                external_id=f"arxiv:{arxiv_id}",
+                doi=None,
+                title=title,
+                authors=authors,
+                abstract=summary or None,
+                publication_year=int(published) if published.isdigit() else None,
+                venue="arXiv Preprint",
+                publisher="arXiv",
+                publication_type="preprint",
+                volume=None,
+                issue=None,
+                pages=None,
+                source_url=raw_id,
+                oa_pdf_url=pdf_url,
+                is_open_access=True,
+                citation_count=None,
+                keywords=[],
+            )
+        )
+    return out, len(out)
+
+
 def search_works(
     query: str,
     *,
+    provider: str = "openalex",
     year_from: int | None = None,
     year_to: int | None = None,
     open_access_only: bool = False,
@@ -179,7 +408,7 @@ def search_works(
     per_page: int = 15,
     http_client: httpx.Client | None = None,
 ) -> DiscoverySearchResponse:
-    """Search OpenAlex works or resolve a direct DOI query."""
+    """Search OpenAlex, Semantic Scholar, Crossref, arXiv, or federated 'all'."""
     cleaned = query.strip()
     maybe_doi = extract_doi(cleaned)
     if maybe_doi and ("doi.org" in cleaned.lower() or cleaned.lower().startswith("10.")):
@@ -189,34 +418,117 @@ def search_works(
             query=cleaned, total=len(results), page=1, per_page=per_page, results=results
         )
 
-    filters: list[str] = []
-    if year_from is not None and year_to is not None:
-        filters.append(f"publication_year:{year_from}-{year_to}")
-    elif year_from is not None:
-        filters.append(f"from_publication_date:{year_from}-01-01")
-    elif year_to is not None:
-        filters.append(f"to_publication_date:{year_to}-12-31")
-    if open_access_only:
-        filters.append("is_oa:true")
-    if publication_type:
-        filters.append(f"type:{publication_type}")
-
-    params: dict[str, str | int] = {
-        "search": cleaned,
-        "page": page,
-        "per-page": per_page,
-    }
-    if filters:
-        params["filter"] = ",".join(filters)
-    if get_settings().openalex_mailto:
-        params["mailto"] = get_settings().openalex_mailto
-
     close_client = http_client is None
     client = http_client or httpx.Client(timeout=12.0, headers=_headers())
     try:
+        if provider == "crossref":
+            res, total = _search_crossref(
+                cleaned,
+                year_from=year_from,
+                year_to=year_to,
+                per_page=per_page,
+                page=page,
+                client=client,
+            )
+            if open_access_only:
+                res = [w for w in res if w.is_open_access]
+            return DiscoverySearchResponse(
+                query=cleaned, total=total, page=page, per_page=per_page, results=res
+            )
+
+        if provider == "semantic_scholar":
+            res, total = _search_semantic_scholar(
+                cleaned,
+                year_from=year_from,
+                year_to=year_to,
+                open_access_only=open_access_only,
+                per_page=per_page,
+                page=page,
+                client=client,
+            )
+            return DiscoverySearchResponse(
+                query=cleaned, total=total, page=page, per_page=per_page, results=res
+            )
+
+        if provider == "arxiv":
+            res, total = _search_arxiv(cleaned, per_page=per_page, page=page, client=client)
+            return DiscoverySearchResponse(
+                query=cleaned, total=total, page=page, per_page=per_page, results=res
+            )
+
+        # OpenAlex (primary for 'openalex' and 'all')
+        filters: list[str] = []
+        if year_from is not None and year_to is not None:
+            filters.append(f"publication_year:{year_from}-{year_to}")
+        elif year_from is not None:
+            filters.append(f"from_publication_date:{year_from}-01-01")
+        elif year_to is not None:
+            filters.append(f"to_publication_date:{year_to}-12-31")
+        if open_access_only:
+            filters.append("is_oa:true")
+        if publication_type:
+            filters.append(f"type:{publication_type}")
+
+        params: dict[str, str | int] = {
+            "search": cleaned,
+            "page": page,
+            "per-page": per_page,
+        }
+        if filters:
+            params["filter"] = ",".join(filters)
+        if get_settings().openalex_mailto:
+            params["mailto"] = get_settings().openalex_mailto
+
         resp = client.get(f"{OPENALEX_BASE}/works", params=params)
         resp.raise_for_status()
         payload = resp.json()
+
+        results: list[DiscoveredWork] = []
+        seen_keys: set[str] = set()
+        for raw in payload.get("results") or []:
+            norm = normalize_openalex_work(raw)
+            if norm is not None:
+                key = (norm.doi or norm.title).lower()
+                seen_keys.add(key)
+                results.append(norm)
+
+        total = int((payload.get("meta") or {}).get("count", len(results)))
+
+        if provider == "all" and http_client is None:
+            s2_res, s2_total = _search_semantic_scholar(
+                cleaned,
+                year_from=year_from,
+                year_to=year_to,
+                open_access_only=open_access_only,
+                per_page=max(10, per_page // 2),
+                page=page,
+                client=client,
+            )
+            for w in s2_res:
+                key = (w.doi or w.title).lower()
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    results.append(w)
+            cr_res, cr_total = _search_crossref(
+                cleaned,
+                year_from=year_from,
+                year_to=year_to,
+                per_page=max(8, per_page // 3),
+                page=page,
+                client=client,
+            )
+            for w in cr_res:
+                if open_access_only and not w.is_open_access:
+                    continue
+                key = (w.doi or w.title).lower()
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    results.append(w)
+            total = total + s2_total + cr_total
+
+        return DiscoverySearchResponse(
+            query=cleaned, total=total, page=page, per_page=per_page, results=results
+        )
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -225,17 +537,6 @@ def search_works(
     finally:
         if close_client:
             client.close()
-
-    results: list[DiscoveredWork] = []
-    for raw in payload.get("results") or []:
-        norm = normalize_openalex_work(raw)
-        if norm is not None:
-            results.append(norm)
-
-    total = (payload.get("meta") or {}).get("count", len(results))
-    return DiscoverySearchResponse(
-        query=cleaned, total=total, page=page, per_page=per_page, results=results
-    )
 
 
 def lookup_by_doi(doi: str, *, http_client: httpx.Client | None = None) -> DiscoveredWork | None:

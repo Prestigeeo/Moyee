@@ -198,6 +198,71 @@ export default function AssistantPage() {
     return text;
   }
 
+  function renderGroundedAnswer(msg: AssistantMessage) {
+    const citeMap = new Map(msg.citations.map((c) => [c.citation_number, c]));
+    const paragraphs = msg.content.split(/\n{2,}/);
+
+    const renderInlineTokens = (line: string) => {
+      const parts = line.split(/(\[\d+\]|\*\*[^*]+\*\*)/g);
+      return parts.map((part, idx) => {
+        const citeMatch = part.match(/^\[(\d+)\]$/);
+        if (citeMatch) {
+          const num = Number(citeMatch[1]);
+          const cite = citeMap.get(num);
+          if (cite) {
+            return (
+              <Link
+                key={idx}
+                href={`/app/p/${projectId}/library/${cite.project_source_id}?page=${cite.page_number ?? 1}&q=${encodeURIComponent(cite.quote.slice(0, 60))}`}
+                title={`${cite.inline_label} — ${cite.source_title} (${cite.page_number ? `p. ${cite.page_number}` : "abstract"})`}
+                className="mx-0.5 inline-flex items-center rounded bg-accent-100 px-1.5 py-0.5 font-sans text-xs font-semibold text-accent-600 transition hover:bg-accent-300/60"
+              >
+                [{num}
+                {cite.page_number ? ` · p.${cite.page_number}` : ""}]
+              </Link>
+            );
+          }
+        }
+        if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+          return (
+            <strong key={idx} className="font-semibold text-ink">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        return <span key={idx}>{part}</span>;
+      });
+    };
+
+    return (
+      <div className="space-y-3 font-reading text-[15px] leading-relaxed text-ink">
+        {paragraphs.map((para, pIdx) => {
+          const trimmed = para.trim();
+          if (!trimmed) return null;
+          const lines = trimmed.split("\n");
+          const isList =
+            lines.length > 1 && lines.every((l) => /^\s*(?:[-*•]|\d+[.)])\s+/.test(l));
+          if (isList) {
+            return (
+              <ul key={pIdx} className="space-y-1.5 pl-4">
+                {lines.map((l, lIdx) => (
+                  <li key={lIdx} className="list-disc">
+                    {renderInlineTokens(l.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, ""))}
+                  </li>
+                ))}
+              </ul>
+            );
+          }
+          return (
+            <p key={pIdx} className="whitespace-pre-wrap">
+              {renderInlineTokens(trimmed)}
+            </p>
+          );
+        })}
+      </div>
+    );
+  }
+
   async function copyAssistantResponse(msg: AssistantMessage) {
     const formattedAnswer = formatMessageWithInlineCitations(msg);
     const refsBlock =
@@ -355,9 +420,7 @@ export default function AssistantPage() {
                     )}
 
                     {/* 1. Direct grounded answer */}
-                    <p className="whitespace-pre-wrap font-reading text-[15px] leading-relaxed text-ink">
-                      {msg.content}
-                    </p>
+                    {renderGroundedAnswer(msg)}
 
                     {/* 2. Verified Source Citations ("From your sources") */}
                     {msg.citations.length > 0 && (

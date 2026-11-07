@@ -111,6 +111,22 @@ def test_writing_studio_citations_assist_and_docx_export(client):
     assert len(parsed_matrix.tables) == 1
     assert "Maize Synthesis Matrix" in "\n".join(p.text for p in parsed_matrix.paragraphs)
 
+    # 7. Chapter Writing Guide (both Standard No-AI and AI-enabled) and RIS export
+    guide = client.post(
+        f"/v1/projects/{pid}/writing/chapter-guide",
+        json={"section_title": "Chapter Two: Literature Review", "use_ai": False},
+        headers=as_user(USER_A),
+    )
+    assert guide.status_code == 200
+    guide_body = guide.json()
+    assert len(guide_body["subsections"]) >= 3
+    assert "(Okafor, 2021)" in guide_body["tailored_draft"]
+
+    ris_resp = client.get(f"/v1/projects/{pid}/sources/ris", headers=as_user(USER_A))
+    assert ris_resp.status_code == 200
+    assert "TY  - JOUR" in ris_resp.text
+    assert "TI  - Seasonal rainfall and maize yields" in ris_resp.text
+
 
 def test_paystack_webhook_signature_and_pro_upgrade(client):
     client.get("/v1/me", headers=as_user(USER_A))

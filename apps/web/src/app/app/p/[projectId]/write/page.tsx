@@ -2,11 +2,26 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Check, Copy, Download, Plus, Quote, Save, Sparkles, Trash2, X } from "lucide-react";
+import {
+  BookOpenCheck,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Download,
+  HelpCircle,
+  Plus,
+  Quote,
+  Save,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Alert, Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import {
   ApiError,
   quotaMessage,
+  type ChapterGuide,
   type DocumentSectionItem,
   type ProjectSource,
   type ResearchDocument,
@@ -34,6 +49,10 @@ export default function WritePage() {
   const [saving, setSaving] = useState(false);
   const [copiedDoc, setCopiedDoc] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [showGuide, setShowGuide] = useState(false);
+  const [chapterGuide, setChapterGuide] = useState<ChapterGuide | null>(null);
+  const [loadingGuide, setLoadingGuide] = useState(false);
+  const [customGuideQuestion, setCustomGuideQuestion] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const loadStudio = useCallback(async () => {
@@ -198,6 +217,44 @@ export default function WritePage() {
     setTimeout(() => setCopiedDoc(false), 2500);
   }
 
+  async function requestChapterGuide(useAi: boolean) {
+    if (!activeSection) return;
+    setShowGuide(true);
+    setLoadingGuide(true);
+    setError(null);
+    try {
+      const guide = await browserApi<ChapterGuide>(
+        `/projects/${projectId}/writing/chapter-guide`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            section_title: activeSection.title,
+            custom_question: customGuideQuestion.trim() || null,
+            use_ai: useAi,
+          }),
+        },
+      );
+      setChapterGuide(guide);
+    } catch {
+      setError("Could not load chapter writing guide.");
+    } finally {
+      setLoadingGuide(false);
+    }
+  }
+
+  function insertTextIntoActiveSection(snippet: string, extraCitedIds: string[] = []) {
+    if (!activeSection) return;
+    const existing = activeSection.content.trimEnd();
+    const nextContent = existing ? `${existing}\n\n${snippet.trim()}` : snippet.trim();
+    const nextSections = sections.map((s) =>
+      s.id === activeSection.id ? { ...s, content: nextContent } : s,
+    );
+    const nextCited = Array.from(new Set([...citedIds, ...extraCitedIds]));
+    setSections(nextSections);
+    setCitedIds(nextCited);
+    saveManuscript(nextSections, nextCited);
+  }
+
   if (!doc) {
     return <p className="text-sm text-stone-500">{error ?? "Opening Writing Studio…"}</p>;
   }
@@ -288,6 +345,9 @@ export default function WritePage() {
                     onClick={() => {
                       setAssistResult(null);
                       setActiveSecId(sec.id);
+                      if (showGuide) {
+                        setChapterGuide(null);
+                      }
                     }}
                     className="flex-1 truncate text-left"
                   >
@@ -336,6 +396,173 @@ export default function WritePage() {
                     </Button>
                   ))}
                 </div>
+              </div>
+
+              {/* Optional Beginner & Project-Tailored Chapter Writing Guide Bar */}
+              <div className="rounded-xl border border-stone-200 bg-stone-50/80 p-3.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <HelpCircle className="size-4 text-brand-600" aria-hidden />
+                    <span className="font-medium text-ink">
+                      Need guidance on how to write{" "}
+                      <span className="font-semibold text-brand-800">{activeSection.title}</span>?
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={loadingGuide}
+                      onClick={() => requestChapterGuide(false)}
+                    >
+                      <BookOpenCheck className="size-3.5" aria-hidden />
+                      Standard Guide (No AI)
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={loadingGuide}
+                      onClick={() => requestChapterGuide(true)}
+                    >
+                      <Sparkles className="size-3.5" aria-hidden />
+                      {loadingGuide ? "Tailoring with AI…" : "Ask AI for Tailored Guide"}
+                    </Button>
+                    {showGuide && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setShowGuide(false)}
+                      >
+                        <ChevronUp className="size-3.5" aria-hidden /> Hide
+                      </Button>
+                    )}
+                    {!showGuide && chapterGuide && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setShowGuide(true)}
+                      >
+                        <ChevronDown className="size-3.5" aria-hidden /> Show
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {showGuide && (
+                  <div className="mt-3 space-y-3 border-t border-stone-200/80 pt-3">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        value={customGuideQuestion}
+                        onChange={(e) => setCustomGuideQuestion(e.target.value)}
+                        placeholder={`Optional: Ask a specific question about writing ${activeSection.title}…`}
+                        className="bg-white text-xs"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={loadingGuide}
+                        onClick={() => requestChapterGuide(true)}
+                        className="shrink-0"
+                      >
+                        <Sparkles className="size-3.5 text-brand-600" aria-hidden />
+                        Update AI Coaching
+                      </Button>
+                    </div>
+
+                    {loadingGuide ? (
+                      <p className="py-4 text-center text-xs text-stone-500">
+                        Preparing tailored guidance for {activeSection.title}…
+                      </p>
+                    ) : (
+                      chapterGuide && (
+                        <div className="space-y-3">
+                          <div className="rounded-lg border border-brand-200 bg-white p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold text-brand-800">
+                                Chapter Goal ({chapterGuide.section_title})
+                              </span>
+                              <Badge className="bg-brand-50 text-brand-800">
+                                {chapterGuide.provider === "extractive"
+                                  ? "Standard Template Guide"
+                                  : `AI Tailored (${chapterGuide.provider})`}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 leading-relaxed text-stone-700">
+                              {chapterGuide.chapter_goal}
+                            </p>
+                          </div>
+
+                          <div className="space-y-2">
+                            <p className="font-semibold text-ink">
+                              Recommended Sub-Sections &amp; Starter Sentences:
+                            </p>
+                            {chapterGuide.subsections.map((sub) => (
+                              <div
+                                key={sub.heading}
+                                className="rounded-lg border border-stone-200 bg-white p-3"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="font-semibold text-ink">{sub.heading}</span>
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() =>
+                                      insertTextIntoActiveSection(
+                                        `### ${sub.heading}\n\n${sub.starter_sentence}`,
+                                        chapterGuide.cited_source_ids,
+                                      )
+                                    }
+                                    className="h-6 px-2 text-[11px]"
+                                  >
+                                    + Insert sub-section
+                                  </Button>
+                                </div>
+                                <p className="mt-1 text-stone-600">{sub.guidance}</p>
+                                <p className="mt-1.5 rounded bg-stone-50 p-2 font-reading italic text-stone-700">
+                                  “{sub.starter_sentence}”
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+
+                          {chapterGuide.common_mistakes.length > 0 && (
+                            <div className="rounded-lg border border-accent-300/80 bg-accent-100/50 p-3">
+                              <p className="font-semibold text-stone-800">
+                                Common Beginner Mistakes to Avoid:
+                              </p>
+                              <ul className="mt-1 list-inside list-disc space-y-1 text-stone-700">
+                                {chapterGuide.common_mistakes.map((m) => (
+                                  <li key={m}>{m}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() =>
+                                insertTextIntoActiveSection(
+                                  chapterGuide.tailored_draft,
+                                  chapterGuide.cited_source_ids,
+                                )
+                              }
+                            >
+                              <Plus className="size-3.5" aria-hidden />
+                              Insert Full Chapter Scaffold into Editor
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </div>
+                )}
               </div>
 
               {assistResult && (

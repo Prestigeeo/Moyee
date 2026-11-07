@@ -16,12 +16,17 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.gateway import _fallback_chapter_guide, generate_chapter_writing_guide
 from app.modules.billing import service as billing
 from app.modules.library.models import ProjectSource
+from app.modules.literature.models import LiteratureMatrix
 from app.modules.projects.models import Project, ProjectTemplate
-from app.modules.references.formatter import format_bibliography_entry
+from app.modules.references.formatter import format_bibliography_entry, format_inline_citation
 from app.modules.writing.models import ResearchDocument
 from app.modules.writing.schemas import (
+    ChapterGuideOut,
+    ChapterGuideRequest,
+    ChapterSubsectionGuide,
     DocumentSectionItem,
     ResearchDocumentCreate,
     ResearchDocumentOut,
@@ -346,3 +351,80 @@ def export_docx_bytes(db: Session, project: Project, doc: ResearchDocument) -> b
     buf = io.BytesIO()
     word_doc.save(buf)
     return buf.getvalue()
+
+
+def build_chapter_guide(
+    db: Session, project: Project, req: ChapterGuideRequest
+) -> ChapterGuideOut:
+    """Build a project-tailored chapter guide (either instant template or AI-coached)."""
+    sources = list(
+        db.scalars(
+            select(ProjectSource)
+            .where(
+                ProjectSource.project_id == project.id,
+                ProjectSource.owner_id == project.owner_id,
+            )
+            .order_by(ProjectSource.created_at.asc())
+        ).all()
+    )
+    sources_summary = [
+        {
+            "id": str(src.id),
+            "title": src.title,
+            "inline_citation": format_inline_citation(src, project.citation_style, idx),
+            "abstract": src.abstract or "",
+        }
+        for idx, src in enumerate(sources, start=1)
+    ]
+
+    latest_matrix = db.scalar(
+        select(LiteratureMatrix)
+        .where(
+            LiteratureMatrix.project_id == project.id,
+            LiteratureMatrix.owner_id == project.owner_id,
+        )
+        .order_by(LiteratureMatrix.updated_at.desc())
+    )
+    matrix_themes = (
+        (latest_matrix.synthesis_notes or {}).get("themes", []) if latest_matrix else []
+    )
+
+    if req.use_ai:
+        res = generate_chapter_writing_guide(
+            section_title=req.section_title,
+            project_name=project.name,
+            project_topic=project.topic,
+            discipline=project.discipline,
+            research_level=project.research_level.value if project.research_level else None,
+            objectives=project.objectives or [],
+            research_questions=project.research_questions or [],
+            sources_summary=sources_summary,
+            matrix_themes=matrix_themes,
+            custom_question=req.custom_question,
+        )
+    else:
+        res = _fallback_chapter_guide(
+            section_title=req.section_title,
+            project_name=project.name,
+            project_topic=project.topic,
+            discipline=(project.discipline or "Interdisciplinary Research").strip(),
+            research_level=(
+                project.research_level.value.replace("_", " ")
+                if project.research_level
+                else "postgraduate"
+            ),
+            objectives=project.objectives or [],
+            research_questions=project.research_questions or [],
+            sources_summary=sources_summary,
+        )
+
+    return ChapterGuideOut(
+        section_title=req.section_title,
+        chapter_goal=res["chapter_goal"],
+        subsections=[ChapterSubsectionGuide(**s) for s in res["subsections"]],
+        common_mistakes=res["common_mistakes"],
+        tailored_draft=res["tailored_draft"],
+        cited_source_ids=[src.id for src in sources[:4]],
+        provider=res["provider"],
+        model=res["model"],
+    )

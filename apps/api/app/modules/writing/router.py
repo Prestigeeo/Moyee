@@ -9,6 +9,8 @@ from app.core.db import get_db
 from app.modules.projects.service import get_owned_project
 from app.modules.writing import service
 from app.modules.writing.schemas import (
+    ChapterGuideOut,
+    ChapterGuideRequest,
     ResearchDocumentOut,
     ResearchDocumentUpdate,
     WritingAppendRequest,
@@ -62,6 +64,17 @@ def append_to_writing_studio(
 ):
     project = get_owned_project(db, user.id, project_id)
     return service.append_to_document(db, project, data)
+
+
+@router.post("/chapter-guide", response_model=ChapterGuideOut)
+def generate_chapter_guide(
+    project_id: uuid.UUID,
+    data: ChapterGuideRequest,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(db, user.id, project_id)
+    return service.build_chapter_guide(db, project, data)
 
 
 @router.get("/{document_id}/docx")
